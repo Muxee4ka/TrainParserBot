@@ -39,5 +39,6 @@ jobs:
       - name: Run tests
         env:
           RUN_INTEGRATION_TESTS: '0'
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           pytest -q
