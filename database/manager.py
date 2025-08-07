@@ -64,9 +64,20 @@ class DatabaseManager:
                     selected_train_number TEXT,
                     selected_train_info TEXT,
                     search_step TEXT DEFAULT 'origin',
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    messages_to_delete TEXT DEFAULT ''
                 )
             ''')
+            
+            # Миграция: добавить колонку messages_to_delete, если её нет (для старых БД)
+            try:
+                cursor.execute("PRAGMA table_info(search_states)")
+                columns = [row[1] for row in cursor.fetchall()]
+                if 'messages_to_delete' not in columns:
+                    cursor.execute("ALTER TABLE search_states ADD COLUMN messages_to_delete TEXT DEFAULT ''")
+                    logger.info("Добавлена колонка messages_to_delete в search_states")
+            except Exception as mig_e:
+                logger.error(f"Ошибка миграции search_states.messages_to_delete: {mig_e}")
             
             conn.commit()
             logger.info("База данных инициализирована")
