@@ -118,25 +118,5 @@ class NotificationService:
             logger.error(f"Ошибка при ответе на callback: {e}")
             return False
 
-    async def delete_message(self, chat_id: int, message_id: int) -> bool:
-        """Удаление сообщения"""
-        try:
-            async with aiohttp.ClientSession() as session:
-                data = {
-                    "chat_id": chat_id,
-                    "message_id": message_id
-                }
-                async with session.post(f"{self.api_url}/deleteMessage", data=data) as response:
-                    if response.status == 200:
-                        logger.info(f"Сообщение {message_id} удалено в чате {chat_id}")
-                        return True
-                    else:
-                        response_text = await response.text()
-                        logger.error(f"Ошибка удаления сообщения: {response.status} - {response_text}")
-                        return False
-        except Exception as e:
-            logger.error(f"Ошибка при удалении сообщения: {e}")
-            return False
-
 
 
