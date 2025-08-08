@@ -51,4 +51,4 @@ jobs:
             pip install -r requirements.txt
 
             # Перезапуск сервиса
-            sudo systemctl restart trainparserbot
+            systemctl restart trainparserbot
