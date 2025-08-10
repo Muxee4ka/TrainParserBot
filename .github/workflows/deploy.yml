@@ -2,7 +2,7 @@ name: Deploy
 
 on:
   push:
-    branches: [ master, main ]
+    branches: [ master, develop ]
 
 jobs:
   deploy:
@@ -27,20 +27,14 @@ jobs:
             # Подготовка директории
             cd "$DEPLOY_DIR"
 
-            # Разрешаем git работать в директории с иным владельцем (если такое произойдет)
             git config --global --add safe.directory "$(pwd)" || true
-
-            # Первый деплой: если нет .git, клонируем репозиторий
             if [ ! -d .git ]; then
               git clone "$REPO" .
             fi
-
-            # Обновление кода
             git fetch --all
             git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
             git reset --hard "origin/$BRANCH"
 
-            # Python venv
             if [ ! -d .venv ]; then
               python3 -m venv .venv
             fi
@@ -48,5 +42,6 @@ jobs:
             python -m pip install --upgrade pip
             pip install -r requirements.txt
 
-            # Перезапуск сервиса
-            systemctl restart trainparserbot
+            # Перезапуск сервиса (без запроса пароля и TTY)
+            sudo -n /usr/bin/systemctl restart trainparserbot
+            sudo -n /usr/bin/systemctl status trainparserbot --no-pager

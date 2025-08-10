@@ -43,5 +43,3 @@ def test_database_crud_tmpdb(monkeypatch):
 
         ok = dm.disable_subscription(sub_id, 123)
         assert ok is True
-
-
