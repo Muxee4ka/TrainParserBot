@@ -9,5 +9,3 @@ if ROOT_DIR not in sys.path:
 
 # Load .env for tests
 load_dotenv()
-
-

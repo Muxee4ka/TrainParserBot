@@ -24,9 +24,3 @@ class BaseHandler(ABC):
     async def handle(self, event: Any) -> None:
         """Обработка события"""
         pass
-
-
-
-
-
-
