@@ -69,21 +69,32 @@ class MonitoringService:
                 children_passengers=subscription.children_passengers
             )
             
-            # Проверяем наличие мест
+            # Проверяем наличие мест и готовим краткое состояние (номер поезда -> суммарные места)
             available_trains = []
+            state_parts = []
             for train in trains_data['trains']:
-                # Проверяем фильтр по номерам поездов
-                if (subscription.train_numbers and 
-                    train.get('TrainNumber') not in subscription.train_numbers.split(',')):
-                    continue
-                
-                # Проверяем наличие мест
-                if self.rzd_api.check_available_seats(train, subscription.min_seats):
+                train_number = train.get('TrainNumber', 'N/A')
+                # Проверяем фильтр по номерам поездов: в состояние включаем только релевантные
+                if subscription.train_numbers:
+                    if train_number not in subscription.train_numbers.split(','):
+                        continue
+
+                total_seats = self.rzd_api.count_available_seats(train)
+                if total_seats >= max(1, subscription.min_seats):
                     available_trains.append(train)
-            
-            # Если найдены поезда с местами, отправляем уведомление
-            if available_trains:
+                # Добавляем краткое резюме по релевантному поезду
+                state_parts.append(f"{train_number}:{total_seats}")
+
+            current_state = ",".join(sorted(state_parts))
+            last_state = self.db_manager.get_subscription_last_state(subscription.id)
+
+            # Отправляем уведомление только если текущая сводка отличается от предыдущей,
+            # и одновременно сейчас есть доступные места по условиям подписки.
+            if available_trains and current_state != (last_state or ""):
                 await self.send_availability_notification(subscription, available_trains)
+
+            # Сохраняем текущее состояние всегда
+            self.db_manager.save_subscription_last_state(subscription.id, current_state)
                 
         except Exception as e:
             logger.error(f"Ошибка при проверке подписки {subscription.id}: {e}")

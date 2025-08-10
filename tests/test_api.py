@@ -73,3 +73,5 @@ def test_train_search_integration():
 
     assert isinstance(data, dict)
     assert 'Trains' in data
+
+

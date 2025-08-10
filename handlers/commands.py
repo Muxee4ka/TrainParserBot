@@ -94,6 +94,11 @@ class CommandsHandler(BaseHandler):
                         "text": f"❌ Отключить #{subscription.id}",
                         "callback_data": f"disable_sub_{subscription.id}"
                     }])
+                else:
+                    keyboard.append([{
+                        "text": f"✅ Включить #{subscription.id}",
+                        "callback_data": f"enable_sub_{subscription.id}"
+                    }])
             
             if keyboard:
                 await self.notification_service.send_message_with_keyboard(

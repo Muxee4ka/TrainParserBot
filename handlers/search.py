@@ -158,6 +158,8 @@ class SearchHandler(BaseHandler):
                 await self.subscribe_to_train(callback)
             elif data.startswith("disable_sub_"):
                 await self.disable_subscription(callback)
+            elif data.startswith("enable_sub_"):
+                await self.enable_subscription(callback)
             else:
                 await callback.answer("Неизвестная команда")
         except Exception as e:
@@ -243,7 +245,8 @@ class SearchHandler(BaseHandler):
         try:
             date_text = message.text.strip()
             date_obj = datetime.strptime(date_text, "%d.%m.%Y")
-            if date_obj < datetime.now():
+            # Разрешаем сегодняшнюю дату: сравниваем по дате без времени
+            if date_obj.date() < datetime.now().date():
                 progress_text = self.format_progress_message(search_state) + '\n❌ Дата не может быть в прошлом. Укажите будущую дату.'
                 if search_state.progress_message_id:
                     await self.notification_service.edit_message(
@@ -619,6 +622,24 @@ class SearchHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Ошибка отключения подписки: {e}")
             await callback.message.edit_text("❌ Ошибка при отключении подписки")
+
+    async def enable_subscription(self, callback: CallbackQuery):
+        """Включение подписки"""
+        try:
+            data = callback.data
+            user_id = callback.from_user.id
+
+            subscription_id = int(data.split("_")[-1])
+            success = self.db_manager.enable_subscription(subscription_id, user_id)
+
+            if success:
+                await callback.message.edit_text("✅ Подписка включена!")
+            else:
+                await callback.message.edit_text("❌ Подписка не найдена или уже активна.")
+
+        except Exception as e:
+            logger.error(f"Ошибка включения подписки: {e}")
+            await callback.message.edit_text("❌ Ошибка при включении подписки")
     
     async def handle_select_train(self, callback: CallbackQuery):
         """Обработка выбора поезда пользователем"""
