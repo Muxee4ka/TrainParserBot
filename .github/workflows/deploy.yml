@@ -24,6 +24,7 @@ jobs:
             REPO="https://github.com/${{ github.repository }}.git"
             BRANCH="${{ github.ref_name }}"
 
+            # Подготовка директории
             cd "$DEPLOY_DIR"
 
             git config --global --add safe.directory "$(pwd)" || true
