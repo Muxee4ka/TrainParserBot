@@ -68,6 +68,15 @@ class DatabaseManager:
                     messages_to_delete TEXT DEFAULT ''
                 )
             ''')
+
+            # Таблица для хранения последнего состояния доступности мест по подписке
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS subscription_states (
+                    subscription_id INTEGER PRIMARY KEY,
+                    last_state TEXT,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             
             # Миграция: добавить колонку messages_to_delete, если её нет (для старых БД)
             try:
@@ -239,6 +248,71 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"Ошибка отключения подписки: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def enable_subscription(self, subscription_id: int, user_id: int) -> bool:
+        """Включение ранее отключенной подписки"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                UPDATE subscriptions
+                SET is_active = 1
+                WHERE id = ? AND user_id = ?
+            ''', (subscription_id, user_id))
+
+            success = cursor.rowcount > 0
+            conn.commit()
+
+            if success:
+                logger.info(f"Подписка #{subscription_id} включена")
+
+            return success
+
+        except Exception as e:
+            logger.error(f"Ошибка включения подписки: {e}")
+            return False
+        finally:
+            conn.close()
+
+    def get_subscription_last_state(self, subscription_id: int) -> Optional[str]:
+        """Возвращает сохранённое состояние доступности мест по подписке"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT last_state FROM subscription_states WHERE subscription_id = ?
+            ''', (subscription_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"Ошибка получения состояния подписки {subscription_id}: {e}")
+            return None
+        finally:
+            conn.close()
+
+    def save_subscription_last_state(self, subscription_id: int, state: str) -> bool:
+        """Сохраняет текущее состояние доступности мест по подписке"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE subscription_states
+                SET last_state = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE subscription_id = ?
+            ''', (state, subscription_id))
+            if cursor.rowcount == 0:
+                cursor.execute('''
+                    INSERT INTO subscription_states (subscription_id, last_state)
+                    VALUES (?, ?)
+                ''', (subscription_id, state))
+            conn.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка сохранения состояния подписки {subscription_id}: {e}")
             return False
         finally:
             conn.close()
