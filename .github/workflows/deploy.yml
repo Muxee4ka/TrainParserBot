@@ -9,53 +9,44 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
       - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
         env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_KEY: ${{ secrets.SSH_KEY }}
+          SSH_PORT: ${{ secrets.SSH_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          envs: BOT_TOKEN
-          script: |
-            set -e
-            DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
-            REPO="https://github.com/${{ github.repository }}.git"
-            BRANCH="${{ github.ref_name }}"
+          BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          PORT="${SSH_PORT:-22}"
 
-            # Подготовка директории
-            cd "$DEPLOY_DIR"
+          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=accept-new \
+            "$SSH_USER@$SSH_HOST" \
+            "DEPLOY_DIR='$DEPLOY_PATH' REPO_URL='https://github.com/$REPO.git' BRANCH='$BRANCH' BOT_TOKEN='$BOT_TOKEN' bash -s" <<'REMOTE'
+          set -e
+          cd "$DEPLOY_DIR"
+          git config --global --add safe.directory "$(pwd)" || true
+          if [ ! -d .git ]; then git clone "$REPO_URL" .; fi
+          git fetch --all
+          git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+          git reset --hard "origin/$BRANCH"
 
-            git config --global --add safe.directory "$(pwd)" || true
-            if [ ! -d .git ]; then
-              git clone "$REPO" .
-            fi
-            git fetch --all
-            git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
-            git reset --hard "origin/$BRANCH"
+          # .env генерируется из секрета BOT_TOKEN (права 600 благодаря umask)
+          umask 077
+          printf 'BOT_TOKEN=%s\n' "$BOT_TOKEN" > .env
 
-            # .env генерируется из секрета BOT_TOKEN (права 600 благодаря umask)
-            umask 077
-            printf 'BOT_TOKEN=%s\n' "$BOT_TOKEN" > .env
+          if [ ! -d .venv ]; then python3 -m venv .venv; fi
+          . .venv/bin/activate
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-            if [ ! -d .venv ]; then
-              python3 -m venv .venv
-            fi
-            . .venv/bin/activate
-            python -m pip install --upgrade pip
-            pip install -r requirements.txt
-
-            # --- ВРЕМЕННАЯ ДИАГНОСТИКА sudo ---
-            echo "DIAG whoami=$(whoami) tty=$(tty || true)"
-            id || true
-            echo "DIAG sudo -n -l:"; sudo -n -l 2>&1 || echo "DIAG sudo -l rc=$?"
-            # --- /ДИАГНОСТИКА ---
-
-            # Перезапуск сервиса (без запроса пароля и TTY)
-            sudo -n /usr/bin/systemctl restart trainparserbot
-            sudo -n /usr/bin/systemctl status trainparserbot --no-pager
+          # Перезапуск сервиса
+          sudo -n /usr/bin/systemctl restart trainparserbot
+          sudo -n /usr/bin/systemctl status trainparserbot --no-pager
+          REMOTE
