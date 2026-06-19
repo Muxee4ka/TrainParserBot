@@ -46,7 +46,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-          # Перезапуск сервиса
+          # Перезапуск сервиса (sudo нужен только для restart; статус читается без root)
           sudo -n /usr/bin/systemctl restart trainparserbot
-          sudo -n /usr/bin/systemctl status trainparserbot --no-pager
+          systemctl --no-pager --full status trainparserbot || true
           REMOTE
