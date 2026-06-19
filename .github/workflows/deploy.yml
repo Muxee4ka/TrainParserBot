@@ -7,32 +7,20 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # self-hosted runner крутится на целевом устройстве (Orange Pi в LAN),
+    # поэтому деплой идёт локально — без SSH и без облачного раннера.
+    runs-on: [self-hosted, orangepi]
     steps:
-      - name: Deploy via SSH
+      - name: Deploy on Orange Pi
         env:
-          SSH_HOST: ${{ secrets.SSH_HOST }}
-          SSH_USER: ${{ secrets.SSH_USER }}
-          SSH_KEY: ${{ secrets.SSH_KEY }}
-          SSH_PORT: ${{ secrets.SSH_PORT }}
-          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_PATH }}
           BRANCH: ${{ github.ref_name }}
           REPO: ${{ github.repository }}
         run: |
-          set -euo pipefail
-          mkdir -p ~/.ssh && chmod 700 ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_deploy
-          chmod 600 ~/.ssh/id_deploy
-          PORT="${SSH_PORT:-22}"
-
-          ssh -i ~/.ssh/id_deploy -p "$PORT" -o StrictHostKeyChecking=accept-new \
-            "$SSH_USER@$SSH_HOST" \
-            "DEPLOY_DIR='$DEPLOY_PATH' REPO_URL='https://github.com/$REPO.git' BRANCH='$BRANCH' BOT_TOKEN='$BOT_TOKEN' bash -s" <<'REMOTE'
           set -e
           cd "$DEPLOY_DIR"
-          git config --global --add safe.directory "$(pwd)" || true
-          if [ ! -d .git ]; then git clone "$REPO_URL" .; fi
+          git config --global --add safe.directory "$DEPLOY_DIR" || true
           git fetch --all
           git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
           git reset --hard "origin/$BRANCH"
@@ -41,12 +29,10 @@ jobs:
           umask 077
           printf 'BOT_TOKEN=%s\n' "$BOT_TOKEN" > .env
 
-          if [ ! -d .venv ]; then python3 -m venv .venv; fi
-          . .venv/bin/activate
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          [ -d .venv ] || python3 -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r requirements.txt
 
-          # Перезапуск сервиса (sudo нужен только для restart; статус читается без root)
-          sudo -n /usr/bin/systemctl restart trainparserbot
+          # Перезапуск сервиса (sudo только на restart; статус читается без root)
+          sudo -n systemctl restart trainparserbot
           systemctl --no-pager --full status trainparserbot || true
-          REMOTE
