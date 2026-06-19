@@ -3,6 +3,7 @@ name: Deploy
 on:
   push:
     branches: [ master, develop ]
+  workflow_dispatch:
 
 jobs:
   deploy:
@@ -13,11 +14,14 @@ jobs:
 
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
         with:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_KEY }}
           port: ${{ secrets.SSH_PORT || 22 }}
+          envs: BOT_TOKEN
           script: |
             set -e
             DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
@@ -34,6 +38,10 @@ jobs:
             git fetch --all
             git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
             git reset --hard "origin/$BRANCH"
+
+            # .env генерируется из секрета BOT_TOKEN (права 600 благодаря umask)
+            umask 077
+            printf 'BOT_TOKEN=%s\n' "$BOT_TOKEN" > .env
 
             if [ ! -d .venv ]; then
               python3 -m venv .venv
