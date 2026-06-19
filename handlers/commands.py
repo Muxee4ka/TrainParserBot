@@ -96,7 +96,7 @@ class CommandsHandler(BaseHandler):
             keyboard = []
             
             for subscription in subscriptions:
-                status = "✅ Активна" if subscription.is_active else "❌ Отключена"
+                status = "🟢 Активна" if subscription.is_active else "🔴 Отключена"
                 message_text += f"🔔 Подписка #{subscription.id}\n"
                 message_text += f"   Маршрут: {subscription.origin_name} -> {subscription.destination_name}\n"
                 message_text += f"   Дата: {subscription.departure_date[:10]}\n"

@@ -123,7 +123,7 @@ class SearchHandler(BaseHandler):
                 station_name = self.rzd_api.format_station_name(station)
                 callback_data = self.rzd_api.create_safe_callback_data(station)
                 keyboard.append([{
-                    "text": station_name,
+                    "text": f"🚉 {station_name}",
                     "callback_data": callback_data
                 }])
             prompt = 'Выберите станцию отправления:' if step == 'origin' else 'Выберите станцию назначения:'
@@ -305,8 +305,14 @@ class SearchHandler(BaseHandler):
                 price = self.rzd_api.min_price(train)
                 price_str = f" · от {price:.0f} ₽" if price else ''
                 message_text += f"\n{i}. 🚂 <b>{train_number}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}{price_str}"
+                # Обогащённый текст кнопки: 🚆 номер · название · от цена ₽
+                btn_parts = [f"🚆 {train_number}"]
+                if t['name']:
+                    btn_parts.append(t['name'])
+                if price:
+                    btn_parts.append(f"от {price:.0f} ₽")
                 keyboard.append([{
-                    "text": f"Выбрать {train_number}",
+                    "text": " · ".join(btn_parts),
                     "callback_data": f"select_train_{train_number}_{t['name'][:20].replace(' ', '')}"
                 }])
             progress_text = self.format_progress_message(search_state) + '\n' + message_text
