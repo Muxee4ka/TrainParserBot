@@ -15,10 +15,15 @@ logger = logging.getLogger(__name__)
 class RZDAPIService:
     """Сервис для работы с API РЖД"""
     
-    def __init__(self):
-        self.api_url = config.RZD_API_URL
-        self.suggest_url = config.RZD_SUGGEST_URL
-        self.user_agent = config.USER_AGENT
+    # Базовый адрес страницы покупки на сайте РЖД (для deep-link в уведомлениях)
+    PURCHASE_BASE_URL = "https://ticket.rzd.ru/searchresults/v/1"
+
+    def __init__(self, api_url: str = None, suggest_url: str = None, user_agent: str = None):
+        # Параметры можно передать явно (удобно для тестов и переиспользования
+        # сервиса вне бота), по умолчанию берутся из config.
+        self.api_url = api_url or config.RZD_API_URL
+        self.suggest_url = suggest_url or config.RZD_SUGGEST_URL
+        self.user_agent = user_agent or config.USER_AGENT
     
     def search_stations(self, query: str) -> List[Dict]:
         """Поиск станций по запросу"""
@@ -150,6 +155,87 @@ class RZDAPIService:
             logger.error(f"Ошибка подсчета мест в поезде: {e}")
             return 0
     
+    @staticmethod
+    def format_duration(minutes) -> str:
+        """Форматирование длительности в пути (минуты -> 'Xч Yм')"""
+        try:
+            total = int(minutes)
+        except (TypeError, ValueError):
+            return ''
+        if total <= 0:
+            return ''
+        hours, mins = divmod(total, 60)
+        if hours and mins:
+            return f"{hours}ч {mins}м"
+        if hours:
+            return f"{hours}ч"
+        return f"{mins}м"
+
+    def extract_train_info(self, train: Dict) -> Dict:
+        """Извлекает отображаемые поля поезда из ответа API РЖД.
+
+        API возвращает время в полях LocalDepartureDateTime/LocalArrivalDateTime
+        и название в TrainName/TrainDescription — а не DepartureTime/RouteName.
+        """
+        def _time(value) -> str:
+            if not value:
+                return ''
+            try:
+                return datetime.fromisoformat(value).strftime('%H:%M')
+            except (ValueError, TypeError):
+                # Fallback: 'YYYY-MM-DDTHH:MM:SS' -> 'HH:MM'
+                return value[11:16] if isinstance(value, str) and len(value) >= 16 else ''
+
+        return {
+            'number': train.get('TrainNumber') or train.get('DisplayTrainNumber') or 'N/A',
+            'name': train.get('TrainName') or train.get('TrainDescription') or '',
+            'departure': _time(train.get('LocalDepartureDateTime')),
+            'arrival': _time(train.get('LocalArrivalDateTime')),
+            'duration': self.format_duration(train.get('TripDuration')),
+        }
+
+    def count_seats_breakdown(self, train: Dict) -> Dict:
+        """Разбивка свободных мест: всего / нижние / верхние и по типам вагонов"""
+        result = {'total': 0, 'lower': 0, 'upper': 0, 'types': {}}
+        try:
+            for cg in train.get('CarGroups', []):
+                if cg.get('AvailabilityIndication') != 'Available':
+                    continue
+                qty = cg.get('PlaceQuantity', 0) or 0
+                result['total'] += qty
+                result['lower'] += cg.get('LowerPlaceQuantity', 0) or 0
+                result['upper'] += cg.get('UpperPlaceQuantity', 0) or 0
+                name = cg.get('CarTypeName') or cg.get('CarType') or '?'
+                result['types'][name] = result['types'].get(name, 0) + qty
+        except Exception as e:
+            logger.error(f"Ошибка разбивки мест в поезде: {e}")
+        return result
+
+    def min_price(self, train: Dict) -> Optional[float]:
+        """Минимальная цена среди доступных вагонов (None, если мест нет)"""
+        try:
+            prices = [
+                cg.get('MinPrice') for cg in train.get('CarGroups', [])
+                if cg.get('AvailabilityIndication') == 'Available' and cg.get('MinPrice')
+            ]
+            return min(prices) if prices else None
+        except Exception as e:
+            logger.error(f"Ошибка определения цены поезда: {e}")
+            return None
+
+    def build_purchase_url(self, origin_code: str, destination_code: str,
+                           departure_date: str) -> str:
+        """Формирует ссылку на страницу покупки РЖД.
+
+        departure_date в формате API ('YYYY-MM-DDT00:00:00') -> 'DD.MM.YYYY'.
+        """
+        date_part = ''
+        try:
+            date_part = datetime.fromisoformat(departure_date).strftime('%d.%m.%Y')
+        except (ValueError, TypeError):
+            date_part = (departure_date or '')[:10]
+        return f"{self.PURCHASE_BASE_URL}/{origin_code}/{destination_code}/{date_part}"
+
     def format_station_name(self, station: Dict) -> str:
         """Форматирование названия станции для отображения"""
         name = station.get('name', '')

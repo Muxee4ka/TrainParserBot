@@ -26,7 +26,8 @@ class CommandsHandler(BaseHandler):
         self.router.message.register(self.start_command, Command("start"))
         self.router.message.register(self.help_command, Command("help"))
         self.router.message.register(self.subscriptions_command, Command("subscriptions"))
-    
+        self.router.message.register(self.cancel_command, Command("cancel"))
+
     async def start_command(self, message: Message):
         """Обработчик команды /start"""
         welcome_text = """
@@ -34,13 +35,22 @@ class CommandsHandler(BaseHandler):
 
 Доступные команды:
 /search - Начать поиск поездов
-/subscribe - Подписаться на отслеживание
 /subscriptions - Мои подписки
+/cancel - Сбросить текущий поиск
 /help - Помощь
 
 💡 Для поиска просто напишите название станции отправления!
         """
         await message.answer(welcome_text.strip())
+
+    async def cancel_command(self, message: Message):
+        """Обработчик команды /cancel — сброс зависшего состояния поиска"""
+        try:
+            self.db_manager.clear_search_state(message.from_user.id)
+            await message.answer("🚫 Текущий поиск сброшен. Напишите /search, чтобы начать заново.")
+        except Exception as e:
+            logger.error(f"Ошибка сброса состояния поиска: {e}")
+            await message.answer("❌ Не удалось сбросить поиск.")
     
     async def help_command(self, message: Message):
         """Обработчик команды /help"""
@@ -60,7 +70,10 @@ class CommandsHandler(BaseHandler):
 
 📋 Управление подписками:
    • /subscriptions - просмотр всех подписок
+   • Нажмите "Проверить" для мгновенной проверки наличия мест
    • Нажмите "Отключить" для отключения подписки
+
+🚫 /cancel - сбросить текущий поиск, если что-то зависло
 
 💡 Советы:
 • Используйте точные названия станций (Москва, Санкт-Петербург)
@@ -90,10 +103,16 @@ class CommandsHandler(BaseHandler):
                 message_text += f"   Статус: {status}\n\n"
                 
                 if subscription.is_active:
-                    keyboard.append([{
-                        "text": f"❌ Отключить #{subscription.id}",
-                        "callback_data": f"disable_sub_{subscription.id}"
-                    }])
+                    keyboard.append([
+                        {
+                            "text": f"🔄 Проверить #{subscription.id}",
+                            "callback_data": f"check_sub_{subscription.id}"
+                        },
+                        {
+                            "text": f"❌ Отключить #{subscription.id}",
+                            "callback_data": f"disable_sub_{subscription.id}"
+                        }
+                    ])
                 else:
                     keyboard.append([{
                         "text": f"✅ Включить #{subscription.id}",

@@ -181,6 +181,44 @@ class DatabaseManager:
         finally:
             conn.close()
     
+    def get_subscription(self, subscription_id: int, user_id: int) -> Optional[Subscription]:
+        """Получение одной подписки пользователя по id"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, user_id, origin_code, origin_name, destination_code, destination_name,
+                       departure_date, train_numbers, car_types, min_seats, adult_passengers,
+                       children_passengers, interval_minutes, is_active, created_at
+                FROM subscriptions
+                WHERE id = ? AND user_id = ?
+            ''', (subscription_id, user_id))
+            row = cursor.fetchone()
+            if not row:
+                return None
+            return Subscription(
+                id=row[0],
+                user_id=row[1],
+                origin_code=row[2],
+                origin_name=row[3],
+                destination_code=row[4],
+                destination_name=row[5],
+                departure_date=row[6],
+                train_numbers=row[7],
+                car_types=row[8],
+                min_seats=row[9],
+                adult_passengers=row[10],
+                children_passengers=row[11],
+                interval_minutes=row[12],
+                is_active=bool(row[13]),
+                created_at=datetime.fromisoformat(row[14])
+            )
+        except Exception as e:
+            logger.error(f"Ошибка получения подписки {subscription_id}: {e}")
+            return None
+        finally:
+            conn.close()
+
     def get_active_subscriptions(self) -> List[Subscription]:
         """Получение всех активных подписок"""
         try:

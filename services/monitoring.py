@@ -57,11 +57,25 @@ class MonitoringService:
         except Exception as e:
             logger.error(f"Ошибка при проверке подписок: {e}")
     
+    def _is_expired(self, subscription: Subscription) -> bool:
+        """Дата отправления уже прошла?"""
+        try:
+            return datetime.fromisoformat(subscription.departure_date).date() < datetime.now().date()
+        except (ValueError, TypeError):
+            return False
+
     async def check_single_subscription(self, subscription: Subscription):
         """Проверка одной подписки"""
         try:
-            # Получаем данные о поездах
-            trains_data = self.rzd_api.search_trains(
+            # Подписки на прошедшие даты больше не имеет смысла проверять — деактивируем
+            if self._is_expired(subscription):
+                self.db_manager.disable_subscription(subscription.id, subscription.user_id)
+                logger.info(f"Подписка #{subscription.id} деактивирована: дата отправления прошла")
+                return
+
+            # Получаем данные о поездах (блокирующий requests — уводим в отдельный поток)
+            trains_data = await asyncio.to_thread(
+                self.rzd_api.search_trains,
                 origin_code=subscription.origin_code,
                 destination_code=subscription.destination_code,
                 departure_date=subscription.departure_date,
@@ -103,9 +117,17 @@ class MonitoringService:
         """Отправка уведомления о появлении мест"""
         try:
             message = self.format_availability_message(subscription, trains)
-            await self.notification_service.send_message(subscription.user_id, message)
+            purchase_url = self.rzd_api.build_purchase_url(
+                subscription.origin_code,
+                subscription.destination_code,
+                subscription.departure_date
+            )
+            keyboard = [[{"text": "🎫 Купить на РЖД", "url": purchase_url}]]
+            await self.notification_service.send_message(
+                subscription.user_id, message, keyboard=keyboard
+            )
             logger.info(f"Уведомление отправлено пользователю {subscription.user_id}")
-            
+
         except Exception as e:
             logger.error(f"Ошибка отправки уведомления: {e}")
     
@@ -117,15 +139,22 @@ class MonitoringService:
         message += f"Дата: {subscription.departure_date[:10]}\n\n"
         
         for i, train in enumerate(trains[:5], 1):  # Показываем первые 5 поездов
-            train_number = train.get('TrainNumber', 'N/A')
-            departure_time = train.get('DepartureTime', '')
-            arrival_time = train.get('ArrivalTime', '')
-            
-            message += f"{i}. 🚂 {train_number}\n"
-            message += f"   ⏰ {departure_time} → {arrival_time}\n"
-            
-            # Считаем доступные места
-            total_seats = self.rzd_api.count_available_seats(train)
-            message += f"   ✅ Доступно мест: {total_seats}\n\n"
-        
+            t = self.rzd_api.extract_train_info(train)
+            duration = f" ({t['duration']})" if t['duration'] else ''
+
+            message += f"{i}. 🚂 {t['number']} {t['name']}\n"
+            message += f"   ⏰ {t['departure']} → {t['arrival']}{duration}\n"
+
+            # Считаем доступные места с разбивкой по нижним/верхним
+            seats = self.rzd_api.count_seats_breakdown(train)
+            seats_line = f"   ✅ Доступно мест: {seats['total']}"
+            if seats['lower'] or seats['upper']:
+                seats_line += f" (низ {seats['lower']} / верх {seats['upper']})"
+            message += seats_line + "\n"
+
+            price = self.rzd_api.min_price(train)
+            if price:
+                message += f"   💰 от {price:.0f} ₽\n"
+            message += "\n"
+
         return message

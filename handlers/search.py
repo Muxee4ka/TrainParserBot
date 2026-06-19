@@ -1,6 +1,7 @@
 """
 Хендлеры для поиска
 """
+import asyncio
 import logging
 from datetime import datetime
 from aiogram import Router, F
@@ -111,7 +112,7 @@ class SearchHandler(BaseHandler):
             self.db_manager.save_search_state(search_state)
             return
         try:
-            stations = self.rzd_api.search_stations(query)
+            stations = await asyncio.to_thread(self.rzd_api.search_stations, query)
             if not stations:
                 sent = await message.answer("Станции не найдены. Попробуйте другой запрос.")
                 search_state.messages_to_delete.append(sent.message_id)
@@ -126,14 +127,15 @@ class SearchHandler(BaseHandler):
                     "callback_data": callback_data
                 }])
             prompt = 'Выберите станцию отправления:' if step == 'origin' else 'Выберите станцию назначения:'
-            sent = await self.notification_service.send_message_with_keyboard(
+            sent_id = await self.notification_service.send_message_with_keyboard(
                 message.from_user.id,
                 f"Найденные станции для запроса '{query}':\n{prompt}",
                 keyboard
             )
-            # send_message_with_keyboard возвращает True/False, но нам нужен message_id, поэтому лучше использовать message.answer
-            # Альтернатива: отправлять через message.answer и вручную формировать reply_markup
-            # Для простоты — не добавляем сюда message_id, если не можем получить
+            # Клавиатуру со списком станций надо удалить после выбора — кладём её id в messages_to_delete
+            if sent_id:
+                search_state.messages_to_delete.append(sent_id)
+                self.db_manager.save_search_state(search_state)
         except Exception as e:
             logger.error(f"Ошибка поиска станций: {e}")
             sent = await message.answer("Ошибка при поиске станций. Попробуйте позже.")
@@ -160,6 +162,8 @@ class SearchHandler(BaseHandler):
                 await self.disable_subscription(callback)
             elif data.startswith("enable_sub_"):
                 await self.enable_subscription(callback)
+            elif data.startswith("check_sub_"):
+                await self.check_subscription_now(callback)
             else:
                 await callback.answer("Неизвестная команда")
         except Exception as e:
@@ -189,7 +193,7 @@ class SearchHandler(BaseHandler):
                 station_name = parts[2]
             else:
                 # Поиск названия станции по коду через API
-                stations = self.rzd_api.search_stations(station_code)
+                stations = await asyncio.to_thread(self.rzd_api.search_stations, station_code)
                 station_name = station_code
                 for st in stations:
                     if str(st.get('expressCode')) == str(station_code):
@@ -266,8 +270,9 @@ class SearchHandler(BaseHandler):
             search_state.departure_date = formatted_date
             search_state.search_step = 'train'
             self.db_manager.save_search_state(search_state)
-            # Поиск поездов через API
-            trains_data = self.rzd_api.search_trains(
+            # Поиск поездов через API (блокирующий requests — уводим в поток)
+            trains_data = await asyncio.to_thread(
+                self.rzd_api.search_trains,
                 origin_code=search_state.origin_code,
                 destination_code=search_state.destination_code,
                 departure_date=search_state.departure_date,
@@ -294,15 +299,15 @@ class SearchHandler(BaseHandler):
             message_text = f"Найдено поездов: {trains_data['total_count']}\nВыберите поезд для отслеживания:"
             keyboard = []
             for i, train in enumerate(trains, 1):
-                train_number = train.get('TrainNumber', 'N/A')
-                route_name = train.get('RouteName', '')
-                departure_time = train.get('DepartureTime', '')
-                arrival_time = train.get('ArrivalTime', '')
-                info = f"{train_number} {route_name} {departure_time}->{arrival_time}"
-                message_text += f"\n{i}. 🚂 <b>{train_number}</b> {route_name} {departure_time}->{arrival_time}"
+                t = self.rzd_api.extract_train_info(train)
+                train_number = t['number']
+                duration = f" ({t['duration']})" if t['duration'] else ''
+                price = self.rzd_api.min_price(train)
+                price_str = f" · от {price:.0f} ₽" if price else ''
+                message_text += f"\n{i}. 🚂 <b>{train_number}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}{price_str}"
                 keyboard.append([{
                     "text": f"Выбрать {train_number}",
-                    "callback_data": f"select_train_{train_number}_{route_name[:20].replace(' ', '')}"
+                    "callback_data": f"select_train_{train_number}_{t['name'][:20].replace(' ', '')}"
                 }])
             progress_text = self.format_progress_message(search_state) + '\n' + message_text
             if len(progress_text) > config.MAX_MESSAGE_LENGTH:
@@ -368,9 +373,10 @@ class SearchHandler(BaseHandler):
                 return
             
             await callback.message.edit_text("🔍 Ищу поезда...")
-            
-            # Поиск поездов через API
-            trains_data = self.rzd_api.search_trains(
+
+            # Поиск поездов через API (блокирующий requests — уводим в поток)
+            trains_data = await asyncio.to_thread(
+                self.rzd_api.search_trains,
                 origin_code=search_state.origin_code,
                 destination_code=search_state.destination_code,
                 departure_date=search_state.departure_date,
@@ -405,31 +411,33 @@ class SearchHandler(BaseHandler):
         message += f"Дата: {search_state.departure_date[:10]}\n\n"
         
         keyboard = []
-        
+
         for i, train in enumerate(trains, 1):
-            train_number = train.get('TrainNumber', 'N/A')
-            route_name = train.get('RouteName', '')
-            departure_time = train.get('DepartureTime', '')
-            arrival_time = train.get('ArrivalTime', '')
-            
-            message += f"{i}. 🚂 <b>{train_number}</b> {route_name}\n"
-            message += f"   ⏰ {departure_time} -> {arrival_time}\n"
-            
+            t = self.rzd_api.extract_train_info(train)
+            train_number = t['number']
+            duration = f" ({t['duration']})" if t['duration'] else ''
+
+            message += f"{i}. 🚂 <b>{train_number}</b> {t['name']}\n"
+            message += f"   ⏰ {t['departure']} -> {t['arrival']}{duration}\n"
+
             # Информация о местах
             available_seats = self.rzd_api.count_available_seats(train)
             if available_seats > 0:
                 message += f"   ✅ Доступно мест: {available_seats}\n"
+                price = self.rzd_api.min_price(train)
+                if price:
+                    message += f"   💰 от {price:.0f} ₽\n"
             else:
                 message += f"   ❌ Нет свободных мест\n"
-            
+
             message += "\n"
-            
+
             # Добавляем кнопку для подписки на этот поезд
             keyboard.append([{
                 "text": f"🔔 Подписаться на {train_number}",
                 "callback_data": f"subscribe_train_{train_number}"
             }])
-        
+
         return message, keyboard
 
     def format_trains_message(self, trains_data: dict, search_state: SearchState) -> str:
@@ -446,23 +454,24 @@ class SearchHandler(BaseHandler):
         message += f"Дата: {search_state.departure_date[:10]}\n\n"
         
         for i, train in enumerate(trains, 1):
-            train_number = train.get('TrainNumber', 'N/A')
-            route_name = train.get('RouteName', '')
-            departure_time = train.get('DepartureTime', '')
-            arrival_time = train.get('ArrivalTime', '')
-            
-            message += f"{i}. 🚂 <b>{train_number}</b> {route_name}\n"
-            message += f"   ⏰ {departure_time} -> {arrival_time}\n"
-            
+            t = self.rzd_api.extract_train_info(train)
+            duration = f" ({t['duration']})" if t['duration'] else ''
+
+            message += f"{i}. 🚂 <b>{t['number']}</b> {t['name']}\n"
+            message += f"   ⏰ {t['departure']} -> {t['arrival']}{duration}\n"
+
             # Информация о местах
             available_seats = self.rzd_api.count_available_seats(train)
             if available_seats > 0:
                 message += f"   ✅ Доступно мест: {available_seats}\n"
+                price = self.rzd_api.min_price(train)
+                if price:
+                    message += f"   💰 от {price:.0f} ₽\n"
             else:
                 message += f"   ❌ Нет свободных мест\n"
-            
+
             message += "\n"
-        
+
         return message
     
     async def subscribe_to_train(self, callback: CallbackQuery):
@@ -641,6 +650,60 @@ class SearchHandler(BaseHandler):
             logger.error(f"Ошибка включения подписки: {e}")
             await callback.message.edit_text("❌ Ошибка при включении подписки")
     
+    async def check_subscription_now(self, callback: CallbackQuery):
+        """Мгновенная проверка наличия мест по подписке (кнопка «Проверить сейчас»)"""
+        try:
+            user_id = callback.from_user.id
+            subscription_id = int(callback.data.split("_")[-1])
+            subscription = self.db_manager.get_subscription(subscription_id, user_id)
+            if not subscription:
+                await callback.answer("Подписка не найдена")
+                return
+            await callback.answer("Проверяю наличие мест…")
+
+            trains_data = await asyncio.to_thread(
+                self.rzd_api.search_trains,
+                origin_code=subscription.origin_code,
+                destination_code=subscription.destination_code,
+                departure_date=subscription.departure_date,
+                adult_passengers=subscription.adult_passengers,
+                children_passengers=subscription.children_passengers,
+            )
+            allowed = subscription.train_numbers.split(',') if subscription.train_numbers else None
+            lines = []
+            for train in trains_data.get('trains', []):
+                t = self.rzd_api.extract_train_info(train)
+                if allowed and t['number'] not in allowed:
+                    continue
+                seats = self.rzd_api.count_seats_breakdown(train)
+                price = self.rzd_api.min_price(train)
+                duration = f" ({t['duration']})" if t['duration'] else ''
+                line = f"🚂 <b>{t['number']}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}\n"
+                if seats['total'] > 0:
+                    line += f"   ✅ мест: {seats['total']}"
+                    if seats['lower'] or seats['upper']:
+                        line += f" (низ {seats['lower']} / верх {seats['upper']})"
+                    if price:
+                        line += f" · от {price:.0f} ₽"
+                else:
+                    line += "   ❌ нет мест"
+                lines.append(line)
+
+            header = (
+                f"🔄 Текущее наличие по подписке #{subscription.id}\n"
+                f"{subscription.origin_name} → {subscription.destination_name}, "
+                f"{subscription.departure_date[:10]}\n\n"
+            )
+            body = "\n".join(lines) if lines else "Поезда не найдены."
+            url = self.rzd_api.build_purchase_url(
+                subscription.origin_code, subscription.destination_code, subscription.departure_date
+            )
+            keyboard = [[{"text": "🎫 Купить на РЖД", "url": url}]]
+            await self.notification_service.send_message(user_id, header + body, keyboard=keyboard)
+        except Exception as e:
+            logger.error(f"Ошибка мгновенной проверки подписки: {e}")
+            await callback.answer("❌ Ошибка при проверке")
+
     async def handle_select_train(self, callback: CallbackQuery):
         """Обработка выбора поезда пользователем"""
         try:
