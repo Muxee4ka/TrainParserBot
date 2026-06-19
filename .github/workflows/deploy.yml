@@ -50,6 +50,12 @@ jobs:
             python -m pip install --upgrade pip
             pip install -r requirements.txt
 
+            # --- ВРЕМЕННАЯ ДИАГНОСТИКА sudo ---
+            echo "DIAG whoami=$(whoami) tty=$(tty || true)"
+            id || true
+            echo "DIAG sudo -n -l:"; sudo -n -l 2>&1 || echo "DIAG sudo -l rc=$?"
+            # --- /ДИАГНОСТИКА ---
+
             # Перезапуск сервиса (без запроса пароля и TTY)
             sudo -n /usr/bin/systemctl restart trainparserbot
             sudo -n /usr/bin/systemctl status trainparserbot --no-pager
