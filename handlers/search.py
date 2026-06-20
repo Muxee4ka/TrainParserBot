@@ -763,8 +763,10 @@ class SearchHandler(BaseHandler):
                 f"Фильтр: {summary}\n\n"
             )
             body = "\n".join(lines) if lines else "Поезда не найдены."
-            url = self.rzd_api.build_purchase_url(
-                subscription.origin_code, subscription.destination_code, subscription.departure_date
+            url = await asyncio.to_thread(
+                self.rzd_api.build_purchase_url,
+                subscription.origin_code, subscription.destination_code, subscription.departure_date,
+                subscription.origin_name, subscription.destination_name, subscription.adult_passengers,
             )
             keyboard = [[{"text": "🎫 Купить на РЖД", "url": url, "style": "success"}]]
             await self.notification_service.send_message(user_id, header + body, keyboard=keyboard)

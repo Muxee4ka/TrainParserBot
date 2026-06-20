@@ -143,10 +143,13 @@ class MonitoringService:
         try:
             # для cabin внутри идёт сетевой запрос схемы вагонов — уводим в поток
             message = await asyncio.to_thread(self.format_availability_message, subscription, trains)
-            purchase_url = self.rzd_api.build_purchase_url(
-                subscription.origin_code,
-                subscription.destination_code,
-                subscription.departure_date
+            # резолв nodeId делает сетевые запросы — уводим в поток
+            purchase_url = await asyncio.to_thread(
+                self.rzd_api.build_purchase_url,
+                subscription.origin_code, subscription.destination_code,
+                subscription.departure_date,
+                subscription.origin_name, subscription.destination_name,
+                subscription.adult_passengers,
             )
             keyboard = [[{"text": "🎫 Купить на РЖД", "url": purchase_url, "style": "success"}]]
             await self.notification_service.send_message(

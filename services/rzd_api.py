@@ -286,18 +286,43 @@ class RZDAPIService:
             logger.error(f"Ошибка определения цены поезда: {e}")
             return None
 
-    def build_purchase_url(self, origin_code: str, destination_code: str,
-                           departure_date: str) -> str:
-        """Формирует ссылку на страницу покупки РЖД.
+    def resolve_node_id(self, code: str, name: str = '') -> str:
+        """Находит nodeId станции (для ссылки на поиск РЖД) по коду и имени.
 
-        departure_date в формате API ('YYYY-MM-DDT00:00:00') -> 'DD.MM.YYYY'.
+        Страница поиска РЖД использует nodeId станции, а не экспресс-код. Suggest
+        не ищет по числовому коду, поэтому запрашиваем по очищенному имени и
+        сопоставляем по expressCode. Возвращает nodeId или '' если не нашли.
         """
-        date_part = ''
+        import re
+        if not name:
+            return ''
+        query = re.sub(r'\s*\(\d+\)\s*$', '', name)      # убрать хвост "(2060001)"
+        query = re.sub(r'\s*\(.*?\)', '', query).strip()  # убрать "(Московский вокзал)"
+        candidates = [q for q in (query, query.split()[0] if query else '') if q]
         try:
-            date_part = datetime.fromisoformat(departure_date).strftime('%d.%m.%Y')
+            for q in candidates:
+                for st in self.search_stations(q):
+                    if str(st.get('expressCode')) == str(code):
+                        return st.get('nodeId') or st.get('cityId') or ''
+        except Exception as e:
+            logger.error(f"Ошибка резолва nodeId для {code}: {e}")
+        return ''
+
+    def build_purchase_url(self, origin_code: str, destination_code: str,
+                           departure_date: str, origin_name: str = '',
+                           destination_name: str = '', adult: int = 1) -> str:
+        """Формирует ссылку на страницу поиска РЖД.
+
+        Сайт ждёт nodeId станций и дату 'YYYY-MM-DD'. nodeId резолвим по имени;
+        если не удалось — откатываемся на экспресс-код (хуже, но не пусто).
+        """
+        try:
+            date_part = datetime.fromisoformat(departure_date).strftime('%Y-%m-%d')
         except (ValueError, TypeError):
             date_part = (departure_date or '')[:10]
-        return f"{self.PURCHASE_BASE_URL}/{origin_code}/{destination_code}/{date_part}"
+        origin = self.resolve_node_id(origin_code, origin_name) or origin_code
+        dest = self.resolve_node_id(destination_code, destination_name) or destination_code
+        return f"{self.PURCHASE_BASE_URL}/{origin}/{dest}/{date_part}?adult={max(1, adult)}"
 
     def format_station_name(self, station: Dict) -> str:
         """Форматирование названия станции для отображения"""

@@ -96,8 +96,13 @@ def test_min_price():
 
 
 def test_build_purchase_url():
+    # без имён резолв nodeId пропускается (без сети) -> фолбэк на коды, дата ISO, ?adult
     url = api.build_purchase_url("2000000", "2004000", "2026-06-26T00:00:00")
-    assert url == "https://ticket.rzd.ru/searchresults/v/1/2000000/2004000/26.06.2026"
-    # некорректная дата -> берём первые 10 символов
-    url2 = api.build_purchase_url("1", "2", "bad-date-xx")
-    assert url2.endswith("/1/2/bad-date-x")
+    assert url == "https://ticket.rzd.ru/searchresults/v/1/2000000/2004000/2026-06-26?adult=1"
+    url2 = api.build_purchase_url("2000000", "2004000", "2026-06-26T00:00:00", adult=2)
+    assert url2.endswith("/2000000/2004000/2026-06-26?adult=2")
+
+
+def test_resolve_node_id_no_name_returns_empty():
+    # пустое имя -> без сетевого запроса, пустой результат
+    assert api.resolve_node_id("2000000", "") == ""
