@@ -87,7 +87,28 @@ class DatabaseManager:
                     logger.info("Добавлена колонка messages_to_delete в search_states")
             except Exception as mig_e:
                 logger.error(f"Ошибка миграции search_states.messages_to_delete: {mig_e}")
-            
+
+            # Миграции новых колонок фильтров (для старых БД)
+            try:
+                cursor.execute("PRAGMA table_info(subscriptions)")
+                cols = [r[1] for r in cursor.fetchall()]
+                if 'berth' not in cols:
+                    cursor.execute("ALTER TABLE subscriptions ADD COLUMN berth TEXT DEFAULT 'any'")
+                if 'max_price' not in cols:
+                    cursor.execute("ALTER TABLE subscriptions ADD COLUMN max_price INTEGER DEFAULT 0")
+                cursor.execute("PRAGMA table_info(search_states)")
+                scols = [r[1] for r in cursor.fetchall()]
+                for col, ddl in (
+                    ('filter_car_types', "ALTER TABLE search_states ADD COLUMN filter_car_types TEXT DEFAULT ''"),
+                    ('filter_berth', "ALTER TABLE search_states ADD COLUMN filter_berth TEXT DEFAULT 'any'"),
+                    ('filter_max_price', "ALTER TABLE search_states ADD COLUMN filter_max_price INTEGER DEFAULT 0"),
+                    ('selected_train_cargroups', "ALTER TABLE search_states ADD COLUMN selected_train_cargroups TEXT DEFAULT ''"),
+                ):
+                    if col not in scols:
+                        cursor.execute(ddl)
+            except Exception as mig_e:
+                logger.error(f"Ошибка миграции колонок фильтров: {mig_e}")
+
             conn.commit()
             logger.info("База данных инициализирована")
             
@@ -104,24 +125,18 @@ class DatabaseManager:
             cursor = conn.cursor()
             
             cursor.execute('''
-                INSERT INTO subscriptions 
-                (user_id, origin_code, origin_name, destination_code, destination_name, 
-                 departure_date, train_numbers, car_types, min_seats, adult_passengers, 
-                 children_passengers, interval_minutes)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO subscriptions
+                (user_id, origin_code, origin_name, destination_code, destination_name,
+                 departure_date, train_numbers, car_types, min_seats, adult_passengers,
+                 children_passengers, interval_minutes, berth, max_price)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                subscription.user_id,
-                subscription.origin_code,
-                subscription.origin_name,
-                subscription.destination_code,
-                subscription.destination_name,
-                subscription.departure_date,
-                subscription.train_numbers,
-                subscription.car_types,
-                subscription.min_seats,
-                subscription.adult_passengers,
-                subscription.children_passengers,
-                subscription.interval_minutes
+                subscription.user_id, subscription.origin_code, subscription.origin_name,
+                subscription.destination_code, subscription.destination_name,
+                subscription.departure_date, subscription.train_numbers, subscription.car_types,
+                subscription.min_seats, subscription.adult_passengers,
+                subscription.children_passengers, subscription.interval_minutes,
+                subscription.berth, subscription.max_price
             ))
             
             subscription_id = cursor.lastrowid
@@ -144,15 +159,15 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT id, user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, train_numbers, car_types, min_seats, adult_passengers,
-                       children_passengers, interval_minutes, is_active, created_at
-                FROM subscriptions 
-                WHERE user_id = ? 
+                       children_passengers, interval_minutes, is_active, created_at, berth, max_price
+                FROM subscriptions
+                WHERE user_id = ?
                 ORDER BY created_at DESC
             ''', (user_id,))
-            
+
             rows = cursor.fetchall()
             subscriptions = []
-            
+
             for row in rows:
                 subscription = Subscription(
                     id=row[0],
@@ -169,12 +184,14 @@ class DatabaseManager:
                     children_passengers=row[11],
                     interval_minutes=row[12],
                     is_active=bool(row[13]),
-                    created_at=datetime.fromisoformat(row[14])
+                    created_at=datetime.fromisoformat(row[14]),
+                    berth=row[15] if row[15] is not None else 'any',
+                    max_price=row[16] if row[16] is not None else 0
                 )
                 subscriptions.append(subscription)
-            
+
             return subscriptions
-            
+
         except Exception as e:
             logger.error(f"Ошибка получения подписок: {e}")
             return []
@@ -189,7 +206,7 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT id, user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, train_numbers, car_types, min_seats, adult_passengers,
-                       children_passengers, interval_minutes, is_active, created_at
+                       children_passengers, interval_minutes, is_active, created_at, berth, max_price
                 FROM subscriptions
                 WHERE id = ? AND user_id = ?
             ''', (subscription_id, user_id))
@@ -211,7 +228,9 @@ class DatabaseManager:
                 children_passengers=row[11],
                 interval_minutes=row[12],
                 is_active=bool(row[13]),
-                created_at=datetime.fromisoformat(row[14])
+                created_at=datetime.fromisoformat(row[14]),
+                berth=row[15] if row[15] is not None else 'any',
+                max_price=row[16] if row[16] is not None else 0
             )
         except Exception as e:
             logger.error(f"Ошибка получения подписки {subscription_id}: {e}")
@@ -228,14 +247,14 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT id, user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, train_numbers, car_types, min_seats, adult_passengers,
-                       children_passengers, interval_minutes, is_active, created_at
-                FROM subscriptions 
+                       children_passengers, interval_minutes, is_active, created_at, berth, max_price
+                FROM subscriptions
                 WHERE is_active = 1
             ''')
-            
+
             rows = cursor.fetchall()
             subscriptions = []
-            
+
             for row in rows:
                 subscription = Subscription(
                     id=row[0],
@@ -252,12 +271,14 @@ class DatabaseManager:
                     children_passengers=row[11],
                     interval_minutes=row[12],
                     is_active=bool(row[13]),
-                    created_at=datetime.fromisoformat(row[14])
+                    created_at=datetime.fromisoformat(row[14]),
+                    berth=row[15] if row[15] is not None else 'any',
+                    max_price=row[16] if row[16] is not None else 0
                 )
                 subscriptions.append(subscription)
-            
+
             return subscriptions
-            
+
         except Exception as e:
             logger.error(f"Ошибка получения активных подписок: {e}")
             return []
@@ -362,11 +383,12 @@ class DatabaseManager:
             cursor = conn.cursor()
             messages_to_delete_str = ','.join(str(mid) for mid in getattr(search_state, 'messages_to_delete', []))
             cursor.execute('''
-                INSERT OR REPLACE INTO search_states 
+                INSERT OR REPLACE INTO search_states
                 (user_id, origin_code, origin_name, destination_code, destination_name,
                  departure_date, adult_passengers, children_passengers, min_seats,
-                 train_numbers, car_types, progress_message_id, selected_train_number, selected_train_info, search_step, updated_at, messages_to_delete)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 train_numbers, car_types, progress_message_id, selected_train_number, selected_train_info, search_step, updated_at, messages_to_delete,
+                 filter_car_types, filter_berth, filter_max_price, selected_train_cargroups)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 search_state.user_id,
                 search_state.origin_code,
@@ -384,7 +406,11 @@ class DatabaseManager:
                 search_state.selected_train_info,
                 search_state.search_step,
                 datetime.now().isoformat(),
-                messages_to_delete_str
+                messages_to_delete_str,
+                getattr(search_state, 'filter_car_types', ''),
+                getattr(search_state, 'filter_berth', 'any'),
+                getattr(search_state, 'filter_max_price', 0),
+                getattr(search_state, 'selected_train_cargroups', ''),
             ))
             conn.commit()
         except Exception as e:
@@ -400,8 +426,9 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, adult_passengers, children_passengers, min_seats,
-                       train_numbers, car_types, progress_message_id, selected_train_number, selected_train_info, search_step, messages_to_delete
-                FROM search_states 
+                       train_numbers, car_types, progress_message_id, selected_train_number, selected_train_info, search_step, messages_to_delete,
+                       filter_car_types, filter_berth, filter_max_price, selected_train_cargroups
+                FROM search_states
                 WHERE user_id = ?
             ''', (user_id,))
             row = cursor.fetchone()
@@ -423,7 +450,11 @@ class DatabaseManager:
                     selected_train_number=row[12],
                     selected_train_info=row[13],
                     search_step=row[14] if row[14] else 'origin',
-                    messages_to_delete=messages_to_delete
+                    messages_to_delete=messages_to_delete,
+                    filter_car_types=row[16] or '',
+                    filter_berth=row[17] or 'any',
+                    filter_max_price=row[18] or 0,
+                    selected_train_cargroups=row[19] or ''
                 )
             return None
         except Exception as e:
