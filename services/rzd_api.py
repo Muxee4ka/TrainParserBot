@@ -131,25 +131,38 @@ class RZDAPIService:
             logger.error(f"Неожиданная ошибка при поиске поездов: {e}")
             return {'trains': [], 'total_count': 0}
     
+    @staticmethod
+    def _available_count(car_group: Dict) -> int:
+        """Реальное число доступных мест в группе вагонов.
+
+        У РЖД PlaceQuantity иногда равен 0, хотя места есть (динамическое
+        ценообразование / продажа целыми купе) — настоящее количество лежит в
+        TotalPlaceQuantity. Берём его, а PlaceQuantity — лишь запасной вариант.
+        """
+        tpq = car_group.get('TotalPlaceQuantity')
+        if tpq is None:
+            tpq = car_group.get('PlaceQuantity', 0)
+        return tpq or 0
+
     def check_available_seats(self, train: Dict, min_seats: int = 1) -> bool:
         """Проверка наличия свободных мест в поезде"""
         try:
             for car_group in train.get('CarGroups', []):
                 if (car_group.get('AvailabilityIndication') == 'Available' and
-                    car_group.get('PlaceQuantity', 0) >= min_seats):
+                    self._available_count(car_group) >= min_seats):
                     return True
             return False
         except Exception as e:
             logger.error(f"Ошибка проверки мест в поезде: {e}")
             return False
-    
+
     def count_available_seats(self, train: Dict) -> int:
         """Подсчет общего количества свободных мест в поезде"""
         try:
             total_seats = 0
             for car_group in train.get('CarGroups', []):
                 if car_group.get('AvailabilityIndication') == 'Available':
-                    total_seats += car_group.get('PlaceQuantity', 0)
+                    total_seats += self._available_count(car_group)
             return total_seats
         except Exception as e:
             logger.error(f"Ошибка подсчета мест в поезде: {e}")
@@ -201,7 +214,7 @@ class RZDAPIService:
             for cg in train.get('CarGroups', []):
                 if cg.get('AvailabilityIndication') != 'Available':
                     continue
-                qty = cg.get('PlaceQuantity', 0) or 0
+                qty = self._available_count(cg)
                 result['total'] += qty
                 result['lower'] += cg.get('LowerPlaceQuantity', 0) or 0
                 result['upper'] += cg.get('UpperPlaceQuantity', 0) or 0
@@ -232,16 +245,22 @@ class RZDAPIService:
                     continue
                 lower = (cg.get('LowerPlaceQuantity', 0) or 0) + (cg.get('LowerSidePlaceQuantity', 0) or 0)
                 upper = (cg.get('UpperPlaceQuantity', 0) or 0) + (cg.get('UpperSidePlaceQuantity', 0) or 0)
-                if berth == 'lower' and lower <= 0:
-                    continue
-                if berth == 'upper' and upper <= 0:
-                    continue
-                qty = cg.get('PlaceQuantity', 0) or 0
-                result['total'] += qty
+                # При фильтре по полке считаем именно места нужной полки, иначе — все доступные
+                if berth == 'lower':
+                    if lower <= 0:
+                        continue
+                    matched = lower
+                elif berth == 'upper':
+                    if upper <= 0:
+                        continue
+                    matched = upper
+                else:
+                    matched = self._available_count(cg)
+                result['total'] += matched
                 result['lower'] += lower
                 result['upper'] += upper
                 name = cg.get('CarTypeName') or cg.get('CarType') or '?'
-                result['by_type'][name] = result['by_type'].get(name, 0) + qty
+                result['by_type'][name] = result['by_type'].get(name, 0) + matched
                 if price and (result['min_price'] is None or price < result['min_price']):
                     result['min_price'] = price
         except Exception as e:
