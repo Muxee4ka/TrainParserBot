@@ -36,3 +36,20 @@ def test_filtered_state_none_match():
     api = RZDAPIService()
     trains, state = MonitoringService._filtered_state(api, _sub(car_types="Soft"), _trains())
     assert trains == [] and state == "001A:0"
+
+
+def test_format_availability_message_respects_price_filter():
+    """Per-train блок в уведомлении должен учитывать фильтры подписки (max_price),
+    а не показывать неотфильтрованные места/цену (ревью Task 5)."""
+    service = MonitoringService.__new__(MonitoringService)
+    service.rzd_api = RZDAPIService()
+
+    subscription = _sub(max_price=3000)
+    message = service.format_availability_message(subscription, _trains())
+
+    # Дорогой (Купе, 9000 ₽) вагон отфильтрован — его цена не должна попасть в сообщение
+    assert "9000" not in message
+    # Дешёвый (Плац, 2000 ₽) вагон проходит фильтр
+    assert "2000" in message
+    # Только подходящие места (5 мест Плац) учитываются в количестве, а не 4+5=9
+    assert "Доступно мест: 5" in message

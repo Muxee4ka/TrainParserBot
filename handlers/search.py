@@ -696,8 +696,8 @@ class SearchHandler(BaseHandler):
             )
             allowed = subscription.train_numbers.split(',') if subscription.train_numbers else None
             car_types = [c for c in (subscription.car_types or '').split(',') if c]
-            berth = getattr(subscription, 'berth', 'any')
-            max_price = getattr(subscription, 'max_price', 0)
+            berth = subscription.berth
+            max_price = subscription.max_price
             lines = []
             for train in trains_data.get('trains', []):
                 t = self.rzd_api.extract_train_info(train)

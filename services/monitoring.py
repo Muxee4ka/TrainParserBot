@@ -76,8 +76,8 @@ class MonitoringService:
                 continue
             m = rzd_api.match_seats(
                 train, car_types=car_types or None,
-                berth=getattr(subscription, 'berth', 'any'),
-                max_price=getattr(subscription, 'max_price', 0),
+                berth=subscription.berth,
+                max_price=subscription.max_price,
             )
             if m['total'] >= max(1, subscription.min_seats):
                 available.append(train)
@@ -145,10 +145,11 @@ class MonitoringService:
         message += f"Маршрут: {subscription.origin_name} -> {subscription.destination_name}\n"
         message += f"Дата: {subscription.departure_date[:10]}\n\n"
 
-        summary = format_filter_summary(
-            subscription.car_types, getattr(subscription, 'berth', 'any'),
-            getattr(subscription, 'max_price', 0),
-        )
+        car_types = [c for c in (subscription.car_types or '').split(',') if c]
+        berth = subscription.berth
+        max_price = subscription.max_price
+
+        summary = format_filter_summary(subscription.car_types, berth, max_price)
         message += f"Фильтр: {summary}\n\n"
 
         for i, train in enumerate(trains[:5], 1):  # Показываем первые 5 поездов
@@ -158,16 +159,17 @@ class MonitoringService:
             message += f"{i}. 🚂 {t['number']} {t['name']}\n"
             message += f"   ⏰ {t['departure']} → {t['arrival']}{duration}\n"
 
-            # Считаем доступные места с разбивкой по нижним/верхним
-            seats = self.rzd_api.count_seats_breakdown(train)
-            seats_line = f"   ✅ Доступно мест: {seats['total']}"
-            if seats['lower'] or seats['upper']:
-                seats_line += f" (низ {seats['lower']} / верх {seats['upper']})"
+            # Считаем доступные места с учётом фильтров подписки (та же логика, что и в триггере)
+            m = self.rzd_api.match_seats(
+                train, car_types=car_types or None, berth=berth, max_price=max_price
+            )
+            seats_line = f"   ✅ Доступно мест: {m['total']}"
+            if m['lower'] or m['upper']:
+                seats_line += f" (низ {m['lower']} / верх {m['upper']})"
             message += seats_line + "\n"
 
-            price = self.rzd_api.min_price(train)
-            if price:
-                message += f"   💰 от {price:.0f} ₽\n"
+            if m['min_price']:
+                message += f"   💰 от {m['min_price']:.0f} ₽\n"
             message += "\n"
 
         return message
