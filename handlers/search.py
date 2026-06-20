@@ -2,6 +2,7 @@
 Хендлеры для поиска
 """
 import asyncio
+import json
 import logging
 from datetime import datetime
 from aiogram import Router, F
@@ -11,6 +12,7 @@ from aiogram.filters import Command
 from handlers.base import BaseHandler
 from services.rzd_api import RZDAPIService
 from services.notification import NotificationService
+from services import filters as flt
 from database import DatabaseManager, SearchState, Subscription
 from config import config
 
@@ -52,6 +54,19 @@ class SearchHandler(BaseHandler):
             f'Дата: <b>{date}</b>\n'
         )
         return msg
+
+    def _panel_text(self, breakdown: dict, matched: dict, filter_summary: str) -> str:
+        by_type = " · ".join(f"{k} {v}" for k, v in breakdown.get("by_type", {}).items()) or "—"
+        price = breakdown.get("min_price")
+        price_str = f" · от {price:.0f} ₽" if price else ""
+        return (
+            f"🚆 <b>Наличие мест</b>\n"
+            f"Найдено мест: {breakdown.get('total', 0)}\n"
+            f"{by_type}  |  низ {breakdown.get('lower', 0)} / верх {breakdown.get('upper', 0)}{price_str}\n\n"
+            f"Фильтр: <b>{filter_summary}</b>\n"
+            f"Под фильтр подходит: {matched.get('total', 0)} мест\n\n"
+            f"Настройте фильтр кнопками ниже и нажмите «Подписаться»."
+        )
 
     async def search_command(self, message: Message):
         """Обработчик команды /search"""
@@ -164,6 +179,10 @@ class SearchHandler(BaseHandler):
                 await self.enable_subscription(callback)
             elif data.startswith("check_sub_"):
                 await self.check_subscription_now(callback)
+            elif data.startswith("flt_"):
+                await self.handle_filter_toggle(callback)
+            elif data == "subscribe_filtered":
+                await self.subscribe_to_selected_train(callback)
             else:
                 await callback.answer("Неизвестная команда")
         except Exception as e:
@@ -711,7 +730,7 @@ class SearchHandler(BaseHandler):
             await callback.answer("❌ Ошибка при проверке")
 
     async def handle_select_train(self, callback: CallbackQuery):
-        """Обработка выбора поезда пользователем"""
+        """Выбор поезда -> показываем панель наличия и фильтров"""
         try:
             data = callback.data
             user_id = callback.from_user.id
@@ -725,28 +744,85 @@ class SearchHandler(BaseHandler):
             if not search_state:
                 await callback.answer('❌ Ошибка состояния поиска')
                 return
+            await callback.answer("Загружаю наличие…")
+            trains_data = await asyncio.to_thread(
+                self.rzd_api.search_trains,
+                origin_code=search_state.origin_code,
+                destination_code=search_state.destination_code,
+                departure_date=search_state.departure_date,
+                adult_passengers=search_state.adult_passengers,
+                children_passengers=search_state.children_passengers,
+            )
+            cargroups = []
+            for tr in trains_data.get('trains', []):
+                if self.rzd_api.extract_train_info(tr)['number'] == train_number:
+                    cargroups = tr.get('CarGroups', [])
+                    break
             search_state.selected_train_number = train_number
             search_state.selected_train_info = train_info
             search_state.search_step = 'done'
+            search_state.selected_train_cargroups = json.dumps(cargroups, ensure_ascii=False)
+            search_state.filter_car_types = ''
+            search_state.filter_berth = 'any'
+            search_state.filter_max_price = 0
             self.db_manager.save_search_state(search_state)
-            progress_text = self.format_progress_message(search_state) + f'\nПоезд: <b>{train_number}</b> {train_info}\n\nНажмите кнопку ниже, чтобы подписаться на этот поезд.'
-            keyboard = [[{"text": "🔔 Подписаться", "callback_data": "subscribe_selected_train"}]]
-            if search_state.progress_message_id:
-                await self.notification_service.edit_message(
-                    callback.message.chat.id,
-                    search_state.progress_message_id,
-                    progress_text,
-                    keyboard=keyboard,
-                    parse_mode='HTML'
-                )
-            else:
-                sent = await callback.message.answer(progress_text, parse_mode='HTML')
-                search_state.progress_message_id = sent.message_id
-                self.db_manager.save_search_state(search_state)
-            await callback.answer()
+            await self._render_filter_panel(callback.message.chat.id, search_state)
         except Exception as e:
             logger.error(f'Ошибка выбора поезда: {e}')
             await callback.answer('❌ Ошибка при выборе поезда')
+
+    async def _render_filter_panel(self, chat_id: int, search_state: SearchState):
+        """Рисует/обновляет панель наличия и фильтров (edit-in-place)."""
+        try:
+            cargroups = json.loads(search_state.selected_train_cargroups or '[]')
+        except Exception:
+            cargroups = []
+        train = {'CarGroups': cargroups}
+        car_types = [c for c in (search_state.filter_car_types or '').split(',') if c]
+        breakdown = self.rzd_api.match_seats(train)
+        matched = self.rzd_api.match_seats(
+            train, car_types=car_types or None,
+            berth=search_state.filter_berth, max_price=search_state.filter_max_price,
+        )
+        summary = flt.format_filter_summary(
+            search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
+        )
+        text = self._panel_text(breakdown, matched, summary)
+        keyboard = flt.build_filter_keyboard(
+            search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
+        )
+        if search_state.progress_message_id:
+            await self.notification_service.edit_message(
+                chat_id, search_state.progress_message_id, text, keyboard=keyboard, parse_mode='HTML'
+            )
+        else:
+            sent_id = await self.notification_service.send_message_with_keyboard(chat_id, text, keyboard)
+            if sent_id:
+                search_state.progress_message_id = sent_id
+                self.db_manager.save_search_state(search_state)
+
+    async def handle_filter_toggle(self, callback: CallbackQuery):
+        """Тоггл фильтра: обновляем состояние и перерисовываем панель без запроса к РЖД."""
+        try:
+            user_id = callback.from_user.id
+            parsed = flt.parse_filter_callback(callback.data)
+            search_state = self.db_manager.get_search_state(user_id)
+            if not parsed or not search_state:
+                await callback.answer()
+                return
+            kind, value = parsed
+            if kind == 'car':
+                search_state.filter_car_types = flt.toggle_car_type(search_state.filter_car_types, value)
+            elif kind == 'berth':
+                search_state.filter_berth = value
+            elif kind == 'price':
+                search_state.filter_max_price = int(value)
+            self.db_manager.save_search_state(search_state)
+            await self._render_filter_panel(callback.message.chat.id, search_state)
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка тоггла фильтра: {e}")
+            await callback.answer()
 
     async def subscribe_to_selected_train(self, callback: CallbackQuery):
         """Подписка на выбранный поезд (через этап выбора)"""
@@ -779,7 +855,9 @@ class SearchHandler(BaseHandler):
                 destination_name=search_state.destination_name,
                 departure_date=search_state.departure_date,
                 train_numbers=search_state.selected_train_number,
-                car_types=search_state.car_types,
+                car_types=search_state.filter_car_types,
+                berth=search_state.filter_berth,
+                max_price=search_state.filter_max_price,
                 min_seats=search_state.min_seats,
                 adult_passengers=search_state.adult_passengers,
                 children_passengers=search_state.children_passengers,
@@ -793,7 +871,8 @@ class SearchHandler(BaseHandler):
                     f"✅ Подписка создана!\n\n"
                     f"Поезд: <b>{search_state.selected_train_number}</b> {search_state.selected_train_info or ''}\n"
                     f"Маршрут: {search_state.origin_name} -> {search_state.destination_name}\n"
-                    f"Дата: {search_state.departure_date[:10]}\n\n"
+                    f"Дата: {search_state.departure_date[:10]}\n"
+                    f"Фильтр: {flt.format_filter_summary(search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price)}\n\n"
                     f"Бот будет проверять наличие мест в поезде {search_state.selected_train_number} каждые 5 минут и уведомит вас при их появлении."
                 )
                 if search_state.progress_message_id:
