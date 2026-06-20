@@ -695,29 +695,35 @@ class SearchHandler(BaseHandler):
                 children_passengers=subscription.children_passengers,
             )
             allowed = subscription.train_numbers.split(',') if subscription.train_numbers else None
+            car_types = [c for c in (subscription.car_types or '').split(',') if c]
+            berth = getattr(subscription, 'berth', 'any')
+            max_price = getattr(subscription, 'max_price', 0)
             lines = []
             for train in trains_data.get('trains', []):
                 t = self.rzd_api.extract_train_info(train)
                 if allowed and t['number'] not in allowed:
                     continue
-                seats = self.rzd_api.count_seats_breakdown(train)
-                price = self.rzd_api.min_price(train)
+                seats = self.rzd_api.match_seats(
+                    train, car_types=car_types or None, berth=berth, max_price=max_price
+                )
                 duration = f" ({t['duration']})" if t['duration'] else ''
                 line = f"🚂 <b>{t['number']}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}\n"
                 if seats['total'] > 0:
                     line += f"   ✅ мест: {seats['total']}"
                     if seats['lower'] or seats['upper']:
                         line += f" (низ {seats['lower']} / верх {seats['upper']})"
-                    if price:
-                        line += f" · от {price:.0f} ₽"
+                    if seats['min_price']:
+                        line += f" · от {seats['min_price']:.0f} ₽"
                 else:
                     line += "   ❌ нет мест"
                 lines.append(line)
 
+            summary = flt.format_filter_summary(subscription.car_types, berth, max_price)
             header = (
                 f"🔄 Текущее наличие по подписке #{subscription.id}\n"
                 f"{subscription.origin_name} → {subscription.destination_name}, "
-                f"{subscription.departure_date[:10]}\n\n"
+                f"{subscription.departure_date[:10]}\n"
+                f"Фильтр: {summary}\n\n"
             )
             body = "\n".join(lines) if lines else "Поезда не найдены."
             url = self.rzd_api.build_purchase_url(

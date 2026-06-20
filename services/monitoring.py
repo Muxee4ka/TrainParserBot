@@ -10,6 +10,7 @@ from datetime import datetime
 from database import DatabaseManager, Subscription
 from services.rzd_api import RZDAPIService
 from services.notification import NotificationService
+from services.filters import format_filter_summary
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,25 @@ class MonitoringService:
         except (ValueError, TypeError):
             return False
 
+    @staticmethod
+    def _filtered_state(rzd_api, subscription, trains: list):
+        """Возвращает (подходящие_поезда, строка_состояния) с учётом фильтров подписки."""
+        car_types = [c for c in (subscription.car_types or '').split(',') if c]
+        available, parts = [], []
+        for train in trains:
+            number = rzd_api.extract_train_info(train)['number']
+            if subscription.train_numbers and number not in subscription.train_numbers.split(','):
+                continue
+            m = rzd_api.match_seats(
+                train, car_types=car_types or None,
+                berth=getattr(subscription, 'berth', 'any'),
+                max_price=getattr(subscription, 'max_price', 0),
+            )
+            if m['total'] >= max(1, subscription.min_seats):
+                available.append(train)
+            parts.append(f"{number}:{m['total']}")
+        return available, ",".join(sorted(parts))
+
     async def check_single_subscription(self, subscription: Subscription):
         """Проверка одной подписки"""
         try:
@@ -83,23 +103,10 @@ class MonitoringService:
                 children_passengers=subscription.children_passengers
             )
             
-            # Проверяем наличие мест и готовим краткое состояние (номер поезда -> суммарные места)
-            available_trains = []
-            state_parts = []
-            for train in trains_data['trains']:
-                train_number = train.get('TrainNumber', 'N/A')
-                # Проверяем фильтр по номерам поездов: в состояние включаем только релевантные
-                if subscription.train_numbers:
-                    if train_number not in subscription.train_numbers.split(','):
-                        continue
-
-                total_seats = self.rzd_api.count_available_seats(train)
-                if total_seats >= max(1, subscription.min_seats):
-                    available_trains.append(train)
-                # Добавляем краткое резюме по релевантному поезду
-                state_parts.append(f"{train_number}:{total_seats}")
-
-            current_state = ",".join(sorted(state_parts))
+            # Проверяем наличие мест (с учётом фильтров подписки) и готовим краткое состояние
+            available_trains, current_state = self._filtered_state(
+                self.rzd_api, subscription, trains_data['trains']
+            )
             last_state = self.db_manager.get_subscription_last_state(subscription.id)
 
             # Отправляем уведомление только если текущая сводка отличается от предыдущей,
@@ -137,7 +144,13 @@ class MonitoringService:
         message += f"Подписка #{subscription.id}\n"
         message += f"Маршрут: {subscription.origin_name} -> {subscription.destination_name}\n"
         message += f"Дата: {subscription.departure_date[:10]}\n\n"
-        
+
+        summary = format_filter_summary(
+            subscription.car_types, getattr(subscription, 'berth', 'any'),
+            getattr(subscription, 'max_price', 0),
+        )
+        message += f"Фильтр: {summary}\n\n"
+
         for i, train in enumerate(trains[:5], 1):  # Показываем первые 5 поездов
             t = self.rzd_api.extract_train_info(train)
             duration = f" ({t['duration']})" if t['duration'] else ''
