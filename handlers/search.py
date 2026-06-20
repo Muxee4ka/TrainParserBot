@@ -277,6 +277,12 @@ class SearchHandler(BaseHandler):
                 await self.enable_subscription(callback)
             elif data.startswith("check_sub_"):
                 await self.check_subscription_now(callback)
+            elif data.startswith("delsub_"):
+                await self.confirm_delete_subscription(callback)
+            elif data.startswith("dodelsub_"):
+                await self.delete_subscription(callback)
+            elif data == "canceldel":
+                await self.cancel_delete_subscription(callback)
             elif data.startswith("flt_"):
                 await self.handle_filter_toggle(callback)
             elif data == "subscribe_filtered":
@@ -689,6 +695,48 @@ class SearchHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Ошибка отключения подписки: {e}")
             await callback.message.edit_text("❌ Ошибка при отключении подписки")
+
+    async def confirm_delete_subscription(self, callback: CallbackQuery):
+        """Шаг подтверждения удаления подписки (отдельным сообщением)."""
+        try:
+            subscription_id = int(callback.data.split("_")[-1])
+            keyboard = [[
+                {"text": "🗑 Да, удалить", "callback_data": f"dodelsub_{subscription_id}", "style": "danger"},
+                {"text": "↩️ Отмена", "callback_data": "canceldel", "style": "primary"},
+            ]]
+            await self.notification_service.send_message(
+                callback.from_user.id,
+                f"Удалить подписку #{subscription_id} безвозвратно?",
+                keyboard=keyboard,
+            )
+            await callback.answer()
+        except Exception as e:
+            logger.error(f"Ошибка подтверждения удаления: {e}")
+            await callback.answer("❌ Ошибка")
+
+    async def cancel_delete_subscription(self, callback: CallbackQuery):
+        """Отмена удаления — убираем сообщение-подтверждение."""
+        try:
+            await self.notification_service.delete_message(
+                callback.message.chat.id, callback.message.message_id
+            )
+            await callback.answer("Отменено")
+        except Exception as e:
+            logger.error(f"Ошибка отмены удаления: {e}")
+            await callback.answer()
+
+    async def delete_subscription(self, callback: CallbackQuery):
+        """Удаление подписки после подтверждения."""
+        try:
+            user_id = callback.from_user.id
+            subscription_id = int(callback.data.split("_")[-1])
+            success = self.db_manager.delete_subscription(subscription_id, user_id)
+            text = f"🗑 Подписка #{subscription_id} удалена." if success else "❌ Подписка не найдена."
+            await callback.message.edit_text(text)
+            await callback.answer("Удалено" if success else "Не найдено")
+        except Exception as e:
+            logger.error(f"Ошибка удаления подписки: {e}")
+            await callback.answer("❌ Ошибка")
 
     async def enable_subscription(self, callback: CallbackQuery):
         """Включение подписки"""

@@ -287,6 +287,27 @@ class DatabaseManager:
         finally:
             conn.close()
     
+    def delete_subscription(self, subscription_id: int, user_id: int) -> bool:
+        """Полное удаление подписки и её состояния мониторинга"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM subscriptions WHERE id = ? AND user_id = ?',
+                           (subscription_id, user_id))
+            success = cursor.rowcount > 0
+            # подчищаем дедуп-состояние подписки
+            cursor.execute('DELETE FROM subscription_states WHERE subscription_id = ?',
+                           (subscription_id,))
+            conn.commit()
+            if success:
+                logger.info(f"Подписка #{subscription_id} удалена")
+            return success
+        except Exception as e:
+            logger.error(f"Ошибка удаления подписки: {e}")
+            return False
+        finally:
+            conn.close()
+
     def disable_subscription(self, subscription_id: int, user_id: int) -> bool:
         """Отключение подписки"""
         try:

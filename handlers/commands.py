@@ -126,11 +126,18 @@ class CommandsHandler(BaseHandler):
                         "callback_data": f"enable_sub_{subscription.id}",
                         "style": "success"
                     }])
-                # Правка фильтров — доступна и для активных, и для отключённых
-                keyboard.append([{
-                    "text": f"✏️ Фильтры #{subscription.id}",
-                    "callback_data": f"editflt_{subscription.id}"
-                }])
+                # Правка фильтров и удаление — доступны и для активных, и для отключённых
+                keyboard.append([
+                    {
+                        "text": f"✏️ Фильтры #{subscription.id}",
+                        "callback_data": f"editflt_{subscription.id}"
+                    },
+                    {
+                        "text": f"🗑 Удалить #{subscription.id}",
+                        "callback_data": f"delsub_{subscription.id}",
+                        "style": "danger"
+                    }
+                ])
 
             if keyboard:
                 await self.notification_service.send_message_with_keyboard(
