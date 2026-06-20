@@ -51,5 +51,6 @@ class SearchState:
     filter_berth: str = 'any'
     filter_max_price: int = 0
     selected_train_cargroups: str = ''
+    editing_subscription_id: Optional[int] = None  # id подписки в режиме редактирования фильтров
 
 

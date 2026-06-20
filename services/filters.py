@@ -62,8 +62,11 @@ def _btn(text: str, callback_data: str, selected: bool = False) -> dict:
     return b
 
 
-def build_filter_keyboard(car_types: str, berth: str, max_price: int) -> list:
-    """Inline-клавиатура тогглов фильтров."""
+def build_filter_keyboard(car_types: str, berth: str, max_price: int,
+                          submit_text: str = "🔔 Подписаться",
+                          submit_cb: str = "subscribe_filtered") -> list:
+    """Inline-клавиатура тогглов фильтров. submit_* задаёт нижнюю кнопку
+    (подписка при создании или сохранение при правке существующей подписки)."""
     codes = set(c for c in (car_types or "").split(",") if c)
 
     car_row = [_btn(CAR_TYPE_LABELS[code], f"flt_car_{code}", code in codes) for code in CAR_TYPE_ORDER]
@@ -78,5 +81,5 @@ def build_filter_keyboard(car_types: str, berth: str, max_price: int) -> list:
         car_row,
         *berth_rows,
         price_row,
-        [{"text": "🔔 Подписаться", "callback_data": "subscribe_filtered", "style": "primary"}],
+        [{"text": submit_text, "callback_data": submit_cb, "style": "primary"}],
     ]

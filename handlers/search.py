@@ -185,6 +185,10 @@ class SearchHandler(BaseHandler):
                 await self.handle_filter_toggle(callback)
             elif data == "subscribe_filtered":
                 await self.subscribe_to_selected_train(callback)
+            elif data.startswith("editflt_"):
+                await self.handle_edit_filters(callback)
+            elif data == "save_filters":
+                await self.save_subscription_filters(callback)
             else:
                 await callback.answer("Неизвестная команда")
         except Exception as e:
@@ -775,6 +779,7 @@ class SearchHandler(BaseHandler):
             search_state.filter_car_types = ''
             search_state.filter_berth = 'any'
             search_state.filter_max_price = 0
+            search_state.editing_subscription_id = None
             self.db_manager.save_search_state(search_state)
             await self._render_filter_panel(callback.message.chat.id, search_state)
         except Exception as e:
@@ -799,8 +804,13 @@ class SearchHandler(BaseHandler):
         )
         text = self._panel_text(breakdown, matched, summary,
                                 matched_unit=flt.matched_unit(search_state.filter_berth))
+        if search_state.editing_subscription_id:
+            submit_text, submit_cb = "💾 Сохранить фильтры", "save_filters"
+        else:
+            submit_text, submit_cb = "🔔 Подписаться", "subscribe_filtered"
         keyboard = flt.build_filter_keyboard(
-            search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
+            search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
+            submit_text=submit_text, submit_cb=submit_cb,
         )
         if search_state.progress_message_id:
             await self.notification_service.edit_message(
@@ -834,6 +844,85 @@ class SearchHandler(BaseHandler):
         except Exception as e:
             logger.error(f"Ошибка тоггла фильтра: {e}")
             await callback.answer()
+
+    async def handle_edit_filters(self, callback: CallbackQuery):
+        """Открывает панель фильтров для существующей подписки (режим правки)."""
+        try:
+            user_id = callback.from_user.id
+            subscription_id = int(callback.data.split("_")[-1])
+            sub = self.db_manager.get_subscription(subscription_id, user_id)
+            if not sub:
+                await callback.answer("Подписка не найдена")
+                return
+            await callback.answer("Загружаю фильтры…")
+            trains_data = await asyncio.to_thread(
+                self.rzd_api.search_trains,
+                origin_code=sub.origin_code,
+                destination_code=sub.destination_code,
+                departure_date=sub.departure_date,
+                adult_passengers=sub.adult_passengers,
+                children_passengers=sub.children_passengers,
+            )
+            allowed = sub.train_numbers.split(',') if sub.train_numbers else None
+            cargroups = []
+            for tr in trains_data.get('trains', []):
+                num = self.rzd_api.extract_train_info(tr)['number']
+                if allowed and num not in allowed:
+                    continue
+                cargroups = tr.get('CarGroups', [])
+                break
+            search_state = self.db_manager.get_search_state(user_id) or SearchState(user_id=user_id)
+            # переносим контекст подписки в состояние, чтобы панель работала как при создании
+            search_state.origin_code = sub.origin_code
+            search_state.origin_name = sub.origin_name
+            search_state.destination_code = sub.destination_code
+            search_state.destination_name = sub.destination_name
+            search_state.departure_date = sub.departure_date
+            search_state.selected_train_number = sub.train_numbers
+            search_state.selected_train_cargroups = json.dumps(cargroups, ensure_ascii=False)
+            search_state.filter_car_types = sub.car_types or ''
+            search_state.filter_berth = sub.berth or 'any'
+            search_state.filter_max_price = sub.max_price or 0
+            search_state.editing_subscription_id = subscription_id
+            search_state.search_step = 'editfilters'
+            search_state.progress_message_id = None  # рисуем панель отдельным сообщением
+            self.db_manager.save_search_state(search_state)
+            await self._render_filter_panel(callback.message.chat.id, search_state)
+        except Exception as e:
+            logger.error(f"Ошибка открытия правки фильтров: {e}")
+            await callback.answer("❌ Ошибка")
+
+    async def save_subscription_filters(self, callback: CallbackQuery):
+        """Сохраняет изменённые фильтры в существующую подписку."""
+        try:
+            user_id = callback.from_user.id
+            search_state = self.db_manager.get_search_state(user_id)
+            if not search_state or not search_state.editing_subscription_id:
+                await callback.answer("Нет подписки для сохранения")
+                return
+            sub_id = search_state.editing_subscription_id
+            ok = self.db_manager.update_subscription_filters(
+                sub_id, user_id,
+                search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
+            )
+            summary = flt.format_filter_summary(
+                search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
+            )
+            if ok:
+                text = (f"✅ Фильтры подписки #{sub_id} обновлены.\nФильтр: <b>{summary}</b>")
+            else:
+                text = "❌ Не удалось обновить фильтры подписки."
+            if search_state.progress_message_id:
+                await self.notification_service.edit_message(
+                    callback.message.chat.id, search_state.progress_message_id, text, parse_mode='HTML'
+                )
+            else:
+                await callback.message.answer(text, parse_mode='HTML')
+            self.db_manager.clear_search_state(user_id)
+            await callback.answer("Сохранено")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения фильтров подписки: {e}")
+            await callback.answer("❌ Ошибка")
 
     async def subscribe_to_selected_train(self, callback: CallbackQuery):
         """Подписка на выбранный поезд (через этап выбора)"""

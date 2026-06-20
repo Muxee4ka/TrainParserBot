@@ -8,6 +8,7 @@ from aiogram.filters import Command
 
 from handlers.base import BaseHandler
 from services.notification import NotificationService
+from services.filters import format_filter_summary
 from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -97,9 +98,13 @@ class CommandsHandler(BaseHandler):
             
             for subscription in subscriptions:
                 status = "🟢 Активна" if subscription.is_active else "🔴 Отключена"
+                filter_summary = format_filter_summary(
+                    subscription.car_types, subscription.berth, subscription.max_price
+                )
                 message_text += f"🔔 Подписка #{subscription.id}\n"
                 message_text += f"   Маршрут: {subscription.origin_name} -> {subscription.destination_name}\n"
                 message_text += f"   Дата: {subscription.departure_date[:10]}\n"
+                message_text += f"   Фильтр: {filter_summary}\n"
                 message_text += f"   Статус: {status}\n\n"
                 
                 if subscription.is_active:
@@ -121,7 +126,12 @@ class CommandsHandler(BaseHandler):
                         "callback_data": f"enable_sub_{subscription.id}",
                         "style": "success"
                     }])
-            
+                # Правка фильтров — доступна и для активных, и для отключённых
+                keyboard.append([{
+                    "text": f"✏️ Фильтры #{subscription.id}",
+                    "callback_data": f"editflt_{subscription.id}"
+                }])
+
             if keyboard:
                 await self.notification_service.send_message_with_keyboard(
                     user_id, message_text, keyboard
