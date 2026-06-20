@@ -12,6 +12,7 @@ from aiogram.filters import Command
 from handlers.base import BaseHandler
 from services.rzd_api import RZDAPIService
 from services.notification import NotificationService
+from services.monitoring import MonitoringService
 from services import filters as flt
 from database import DatabaseManager, SearchState, Subscription
 from config import config
@@ -705,25 +706,31 @@ class SearchHandler(BaseHandler):
             berth = subscription.berth
             max_price = subscription.max_price
             lines = []
+            unit = flt.matched_unit(berth)
             for train in trains_data.get('trains', []):
                 t = self.rzd_api.extract_train_info(train)
                 if allowed and t['number'] not in allowed:
                     continue
-                seats = self.rzd_api.match_seats(
-                    train, car_types=car_types or None, berth=berth, max_price=max_price
-                )
                 duration = f" ({t['duration']})" if t['duration'] else ''
-                unit = flt.matched_unit(berth)
                 line = f"🚂 <b>{t['number']}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}\n"
-                if seats['total'] > 0:
-                    line += f"   ✅ {unit}: {seats['total']}"
-                    # детализацию низ/верх показываем только когда не считаем купе целиком
-                    if berth != 'cabin' and (seats['lower'] or seats['upper']):
-                        line += f" (низ {seats['lower']} / верх {seats['upper']})"
-                    if seats['min_price']:
-                        line += f" · от {seats['min_price']:.0f} ₽"
+                if berth == 'cabin':
+                    # точный подсчёт пустых купе через схему вагонов (сетевой запрос — в поток)
+                    count = await asyncio.to_thread(
+                        MonitoringService.count_matched, self.rzd_api, subscription, train
+                    )
+                    line += f"   ✅ {unit}: {count}" if count > 0 else f"   ❌ нет ({unit})"
                 else:
-                    line += f"   ❌ нет ({unit})"
+                    seats = self.rzd_api.match_seats(
+                        train, car_types=car_types or None, berth=berth, max_price=max_price
+                    )
+                    if seats['total'] > 0:
+                        line += f"   ✅ {unit}: {seats['total']}"
+                        if seats['lower'] or seats['upper']:
+                            line += f" (низ {seats['lower']} / верх {seats['upper']})"
+                        if seats['min_price']:
+                            line += f" · от {seats['min_price']:.0f} ₽"
+                    else:
+                        line += f"   ❌ нет ({unit})"
                 lines.append(line)
 
             summary = flt.format_filter_summary(subscription.car_types, berth, max_price)
@@ -767,15 +774,15 @@ class SearchHandler(BaseHandler):
                 adult_passengers=search_state.adult_passengers,
                 children_passengers=search_state.children_passengers,
             )
-            cargroups = []
+            selected = None
             for tr in trains_data.get('trains', []):
                 if self.rzd_api.extract_train_info(tr)['number'] == train_number:
-                    cargroups = tr.get('CarGroups', [])
+                    selected = tr
                     break
             search_state.selected_train_number = train_number
             search_state.selected_train_info = train_info
             search_state.search_step = 'done'
-            search_state.selected_train_cargroups = json.dumps(cargroups, ensure_ascii=False)
+            search_state.selected_train_cargroups = self._store_train(selected or {})
             search_state.filter_car_types = ''
             search_state.filter_berth = 'any'
             search_state.filter_max_price = 0
@@ -786,19 +793,46 @@ class SearchHandler(BaseHandler):
             logger.error(f'Ошибка выбора поезда: {e}')
             await callback.answer('❌ Ошибка при выборе поезда')
 
+    @staticmethod
+    def _store_train(train: dict) -> str:
+        """Сериализует нужные для панели данные поезда: CarGroups + мета (provider, dep)."""
+        return json.dumps({
+            "cg": train.get("CarGroups", []),
+            "p": train.get("Provider", "P1"),
+            "d": train.get("LocalDepartureDateTime"),
+        }, ensure_ascii=False)
+
+    @staticmethod
+    def _load_train(blob: str):
+        """Возвращает (cargroups, provider, dep). Поддерживает старый формат (список CarGroups)."""
+        try:
+            data = json.loads(blob or '[]')
+        except Exception:
+            return [], "P1", None
+        if isinstance(data, list):  # старый формат — только CarGroups
+            return data, "P1", None
+        return data.get("cg", []), data.get("p", "P1"), data.get("d")
+
     async def _render_filter_panel(self, chat_id: int, search_state: SearchState):
         """Рисует/обновляет панель наличия и фильтров (edit-in-place)."""
-        try:
-            cargroups = json.loads(search_state.selected_train_cargroups or '[]')
-        except Exception:
-            cargroups = []
+        cargroups, provider, dep = self._load_train(search_state.selected_train_cargroups)
         train = {'CarGroups': cargroups}
         car_types = [c for c in (search_state.filter_car_types or '').split(',') if c]
         breakdown = self.rzd_api.match_seats(train)
-        matched = self.rzd_api.match_seats(
-            train, car_types=car_types or None,
-            berth=search_state.filter_berth, max_price=search_state.filter_max_price,
-        )
+        if search_state.filter_berth == 'cabin':
+            # точный подсчёт пустых купе через схему вагонов (сетевой запрос — в поток)
+            from services.rzd_seatmap import SeatMapService
+            n = await asyncio.to_thread(
+                SeatMapService().empty_compartments,
+                search_state.origin_code, search_state.destination_code, dep,
+                search_state.selected_train_number, provider,
+            )
+            matched = {'total': n if n is not None else 0}
+        else:
+            matched = self.rzd_api.match_seats(
+                train, car_types=car_types or None,
+                berth=search_state.filter_berth, max_price=search_state.filter_max_price,
+            )
         summary = flt.format_filter_summary(
             search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
         )
@@ -864,12 +898,12 @@ class SearchHandler(BaseHandler):
                 children_passengers=sub.children_passengers,
             )
             allowed = sub.train_numbers.split(',') if sub.train_numbers else None
-            cargroups = []
+            selected = {}
             for tr in trains_data.get('trains', []):
                 num = self.rzd_api.extract_train_info(tr)['number']
                 if allowed and num not in allowed:
                     continue
-                cargroups = tr.get('CarGroups', [])
+                selected = tr
                 break
             search_state = self.db_manager.get_search_state(user_id) or SearchState(user_id=user_id)
             # переносим контекст подписки в состояние, чтобы панель работала как при создании
@@ -879,7 +913,7 @@ class SearchHandler(BaseHandler):
             search_state.destination_name = sub.destination_name
             search_state.departure_date = sub.departure_date
             search_state.selected_train_number = sub.train_numbers
-            search_state.selected_train_cargroups = json.dumps(cargroups, ensure_ascii=False)
+            search_state.selected_train_cargroups = self._store_train(selected)
             search_state.filter_car_types = sub.car_types or ''
             search_state.filter_berth = sub.berth or 'any'
             search_state.filter_max_price = sub.max_price or 0

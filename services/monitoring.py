@@ -66,22 +66,39 @@ class MonitoringService:
             return False
 
     @staticmethod
-    def _filtered_state(rzd_api, subscription, trains: list):
-        """Возвращает (подходящие_поезда, строка_состояния) с учётом фильтров подписки."""
+    def count_matched(rzd_api, subscription, train) -> int:
+        """Сколько мест поезда подходит под фильтр подписки.
+
+        Для berth='cabin' считает полностью свободные купе через схему вагонов
+        (CarPricing) — агрегатное EmptyCabinQuantity ненадёжно. Иначе — match_seats.
+        """
+        if subscription.berth == 'cabin':
+            from services.rzd_seatmap import SeatMapService
+            n = SeatMapService().empty_compartments(
+                subscription.origin_code, subscription.destination_code,
+                train.get('LocalDepartureDateTime'),
+                train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
+                train.get('Provider', 'P1'),
+            )
+            return n or 0
         car_types = [c for c in (subscription.car_types or '').split(',') if c]
+        return rzd_api.match_seats(
+            train, car_types=car_types or None,
+            berth=subscription.berth, max_price=subscription.max_price,
+        )['total']
+
+    @classmethod
+    def _filtered_state(cls, rzd_api, subscription, trains: list):
+        """Возвращает (подходящие_поезда, строка_состояния) с учётом фильтров подписки."""
         available, parts = [], []
         for train in trains:
             number = rzd_api.extract_train_info(train)['number']
             if subscription.train_numbers and number not in subscription.train_numbers.split(','):
                 continue
-            m = rzd_api.match_seats(
-                train, car_types=car_types or None,
-                berth=subscription.berth,
-                max_price=subscription.max_price,
-            )
-            if m['total'] >= max(1, subscription.min_seats):
+            count = cls.count_matched(rzd_api, subscription, train)
+            if count >= max(1, subscription.min_seats):
                 available.append(train)
-            parts.append(f"{number}:{m['total']}")
+            parts.append(f"{number}:{count}")
         return available, ",".join(sorted(parts))
 
     async def check_single_subscription(self, subscription: Subscription):
@@ -103,9 +120,10 @@ class MonitoringService:
                 children_passengers=subscription.children_passengers
             )
             
-            # Проверяем наличие мест (с учётом фильтров подписки) и готовим краткое состояние
-            available_trains, current_state = self._filtered_state(
-                self.rzd_api, subscription, trains_data['trains']
+            # Проверяем наличие мест (с учётом фильтров подписки) и готовим краткое состояние.
+            # Для фильтра «купе целиком» внутри идёт сетевой запрос схемы вагонов — уводим в поток.
+            available_trains, current_state = await asyncio.to_thread(
+                self._filtered_state, self.rzd_api, subscription, trains_data['trains']
             )
             last_state = self.db_manager.get_subscription_last_state(subscription.id)
 
@@ -123,7 +141,8 @@ class MonitoringService:
     async def send_availability_notification(self, subscription: Subscription, trains: List[dict]):
         """Отправка уведомления о появлении мест"""
         try:
-            message = self.format_availability_message(subscription, trains)
+            # для cabin внутри идёт сетевой запрос схемы вагонов — уводим в поток
+            message = await asyncio.to_thread(self.format_availability_message, subscription, trains)
             purchase_url = self.rzd_api.build_purchase_url(
                 subscription.origin_code,
                 subscription.destination_code,
@@ -159,18 +178,21 @@ class MonitoringService:
             message += f"{i}. 🚂 {t['number']} {t['name']}\n"
             message += f"   ⏰ {t['departure']} → {t['arrival']}{duration}\n"
 
-            # Считаем доступные места с учётом фильтров подписки (та же логика, что и в триггере)
-            m = self.rzd_api.match_seats(
-                train, car_types=car_types or None, berth=berth, max_price=max_price
-            )
             unit = matched_unit(berth)
-            seats_line = f"   ✅ Доступно ({unit}): {m['total']}"
-            if berth != 'cabin' and (m['lower'] or m['upper']):
-                seats_line += f" (низ {m['lower']} / верх {m['upper']})"
-            message += seats_line + "\n"
-
-            if m['min_price']:
-                message += f"   💰 от {m['min_price']:.0f} ₽\n"
+            if berth == 'cabin':
+                # точный подсчёт пустых купе через схему вагонов (та же логика, что и в триггере)
+                count = self.count_matched(self.rzd_api, subscription, train)
+                message += f"   ✅ Доступно ({unit}): {count}\n"
+            else:
+                m = self.rzd_api.match_seats(
+                    train, car_types=car_types or None, berth=berth, max_price=max_price
+                )
+                seats_line = f"   ✅ Доступно ({unit}): {m['total']}"
+                if m['lower'] or m['upper']:
+                    seats_line += f" (низ {m['lower']} / верх {m['upper']})"
+                message += seats_line + "\n"
+                if m['min_price']:
+                    message += f"   💰 от {m['min_price']:.0f} ₽\n"
             message += "\n"
 
         return message

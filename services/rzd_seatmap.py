@@ -1,77 +1,101 @@
-"""Best-effort определение мест «у окна» через схему вагона РЖД.
+"""Подсчёт полностью свободных купе через схему вагонов РЖД (CarPricing).
 
-Используется ТОЛЬКО при просмотре/подписке, никогда в цикле мониторинга.
-Эндпоинт car-pricing требует доревёрса параметров; до этого _fetch может
-возвращать пустое/ошибку, а публичные функции — None (UI показывает «н/д»).
+Агрегатное поле EmptyCabinQuantity из train-pricing ненадёжно (возвращает 0,
+когда пустые купе реально есть). Достоверный источник — эндпоинт CarPricing,
+который отдаёт свободные места, сгруппированные по купе (FreePlacesByCompartments).
+Один физический вагон в ответе разбит на несколько строк (разные тарифы) — их
+объединяем по CarNumber, а места внутри купе — по CompartmentNumber. Купе считаем
+полностью свободным, если в нём свободны все 4 места.
+
+Это сетевой запрос на поезд, поэтому используется только под фильтр «купе целиком»
+(berth='cabin'), не в общем цикле мониторинга остальных подписок.
 """
 import logging
+from collections import defaultdict
+
 import requests
 
 from config import config
 
 logger = logging.getLogger(__name__)
 
-CAR_PRICING_URL = "https://ticket.rzd.ru/api/v1/railway-service/prices/car-pricing"
+CAR_PRICING_URL = (
+    "https://ticket.rzd.ru/apib2b/p/Railway/V1/Search/CarPricing"
+    "?service_provider=B2B_RZD&isBonusPurchase=false"
+)
+# Количество мест в стандартном купе
+COMPARTMENT_SIZE = 4
 
 
-def parse_window_counts(payload: dict):
-    """Считает доступные места у окна / не у окна из схемы вагона.
+def count_empty_compartments(payload: dict) -> int:
+    """Считает полностью свободные купе по ответу CarPricing.
 
-    Возвращает None, если форма ответа не распознана (тогда UI -> «н/д»).
+    Объединяет строки одного вагона (CarNumber) и места внутри купе
+    (CompartmentNumber), затем считает купе, где свободны все 4 места.
+    Учитываются только купейные вагоны (CarType == 'Compartment').
     """
     try:
-        cars = payload.get("Cars")
-        if not cars:
-            return None
-        window = other = 0
-        seen = False
-        for car in cars:
-            for pl in car.get("Places", []) or []:
-                if "Window" not in pl:
-                    continue
-                seen = True
-                if not pl.get("IsAvailable", True):
-                    continue
-                if pl.get("Window"):
-                    window += 1
-                else:
-                    other += 1
-        if not seen:
-            return None
-        return {"window": window, "other": other}
+        # car_number -> compartment_number -> множество свободных мест
+        cars = defaultdict(lambda: defaultdict(set))
+        for car in payload.get("Cars") or []:
+            if car.get("CarType") != "Compartment":
+                continue
+            number = car.get("CarNumber")
+            for blk in car.get("FreePlacesByCompartments") or []:
+                comp = blk.get("CompartmentNumber")
+                for p in str(blk.get("Places", "")).split(","):
+                    p = p.strip()
+                    if p.isdigit():
+                        cars[number][comp].add(int(p))
+        total = 0
+        for compartments in cars.values():
+            total += sum(1 for places in compartments.values() if len(places) >= COMPARTMENT_SIZE)
+        return total
     except Exception as e:
-        logger.error(f"Ошибка парсинга схемы мест: {e}")
-        return None
+        logger.error(f"Ошибка подсчёта пустых купе: {e}")
+        return 0
 
 
 class SeatMapService:
-    """Обёртка над car-pricing РЖД (best-effort)."""
+    """Обёртка над эндпоинтом схемы вагонов РЖД (CarPricing)."""
 
     def __init__(self):
         self.user_agent = config.USER_AGENT
 
-    def _fetch(self, train_number, car_type, origin, destination, departure_date) -> dict:
-        params = {
-            "service_provider": "B2B_RZD",
-            "getByLocalTime": "true",
-            "origin": origin,
-            "destination": destination,
-            "departureDate": departure_date,
-            "trainNumber": train_number,
-            "carType": car_type,
-            "specialPlacesDemand": "StandardPlacesAndForDisabledPersons",
-            "carIssuingType": "Passenger",
-            "adultPassengersQuantity": 1,
+    def _fetch(self, origin_code: str, destination_code: str, departure_datetime: str,
+               train_number: str, provider: str = "P1") -> dict:
+        """POST к CarPricing. departure_datetime — ЛОКАЛЬНОЕ время отправления
+        (LocalDepartureDateTime поезда, с часами, а не полночь)."""
+        headers = {
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "User-Agent": self.user_agent,
+            "Origin": "https://ticket.rzd.ru",
+            "Referer": "https://ticket.rzd.ru/",
         }
-        headers = {"Accept": "application/json, text/plain, */*", "User-Agent": self.user_agent}
-        resp = requests.get(CAR_PRICING_URL, params=params, headers=headers, timeout=30)
+        body = {
+            "OriginCode": origin_code,
+            "DestinationCode": destination_code,
+            "Provider": provider or "P1",
+            "DepartureDate": departure_datetime,
+            "TrainNumber": train_number,
+            "SpecialPlacesDemand": "StandardPlacesAndForDisabledPersons",
+            "OnlyFpkBranded": False,
+            "HasPlacesForLargeFamily": False,
+            "CarIssuingType": "Passenger",
+        }
+        resp = requests.post(CAR_PRICING_URL, json=body, headers=headers, timeout=30)
         resp.raise_for_status()
         return resp.json()
 
-    def get_window_counts(self, train_number, car_type, origin, destination, departure_date):
-        """Возвращает {'window':int,'other':int} или None (best-effort)."""
+    def empty_compartments(self, origin_code: str, destination_code: str,
+                           departure_datetime: str, train_number: str,
+                           provider: str = "P1"):
+        """Число полностью свободных купе поезда или None при сетевой ошибке."""
         try:
-            return parse_window_counts(self._fetch(train_number, car_type, origin, destination, departure_date))
+            return count_empty_compartments(
+                self._fetch(origin_code, destination_code, departure_datetime, train_number, provider)
+            )
         except Exception as e:
-            logger.error(f"Схема мест недоступна: {e}")
+            logger.error(f"Схема вагонов недоступна ({train_number}): {e}")
             return None
