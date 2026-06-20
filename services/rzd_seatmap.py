@@ -27,12 +27,13 @@ CAR_PRICING_URL = (
 COMPARTMENT_SIZE = 4
 
 
-def count_empty_compartments(payload: dict) -> int:
-    """Считает полностью свободные купе по ответу CarPricing.
+def empty_compartments_detail(payload: dict) -> list:
+    """Список полностью свободных купе с номерами мест.
 
     Объединяет строки одного вагона (CarNumber) и места внутри купе
-    (CompartmentNumber), затем считает купе, где свободны все 4 места.
-    Учитываются только купейные вагоны (CarType == 'Compartment').
+    (CompartmentNumber); купе считается пустым, если свободны все 4 места.
+    Возвращает [{'car': '27', 'compartment': '3', 'places': [9,10,11,12]}, ...],
+    отсортированный по вагону и купе. Только купейные вагоны.
     """
     try:
         # car_number -> compartment_number -> множество свободных мест
@@ -47,13 +48,36 @@ def count_empty_compartments(payload: dict) -> int:
                     p = p.strip()
                     if p.isdigit():
                         cars[number][comp].add(int(p))
-        total = 0
-        for compartments in cars.values():
-            total += sum(1 for places in compartments.values() if len(places) >= COMPARTMENT_SIZE)
-        return total
+        result = []
+        for number, compartments in cars.items():
+            for comp, places in compartments.items():
+                if len(places) >= COMPARTMENT_SIZE:
+                    result.append({"car": number, "compartment": comp, "places": sorted(places)})
+
+        def _key(d):
+            def _int(v):
+                return int(v) if str(v).isdigit() else 0
+            return (_int(d["car"]), _int(d["compartment"]))
+        result.sort(key=_key)
+        return result
     except Exception as e:
-        logger.error(f"Ошибка подсчёта пустых купе: {e}")
-        return 0
+        logger.error(f"Ошибка разбора пустых купе: {e}")
+        return []
+
+
+def count_empty_compartments(payload: dict) -> int:
+    """Число полностью свободных купе (см. empty_compartments_detail)."""
+    return len(empty_compartments_detail(payload))
+
+
+def format_empty_cabins(detail: list, limit: int = 6) -> str:
+    """Человекочитаемый список пустых купе: 'вагон 27: купе 1, 3, 4'."""
+    by_car = defaultdict(list)
+    for d in detail[:limit]:
+        by_car[d["car"]].append(str(d["compartment"]))
+    parts = [f"вагон {car}: купе {', '.join(comps)}" for car, comps in by_car.items()]
+    tail = f" и ещё {len(detail) - limit}" if len(detail) > limit else ""
+    return "; ".join(parts) + tail
 
 
 class SeatMapService:
@@ -88,14 +112,23 @@ class SeatMapService:
         resp.raise_for_status()
         return resp.json()
 
-    def empty_compartments(self, origin_code: str, destination_code: str,
-                           departure_datetime: str, train_number: str,
-                           provider: str = "P1"):
-        """Число полностью свободных купе поезда или None при сетевой ошибке."""
+    def empty_compartments_detail(self, origin_code: str, destination_code: str,
+                                  departure_datetime: str, train_number: str,
+                                  provider: str = "P1"):
+        """Список пустых купе с номерами мест или None при сетевой ошибке."""
         try:
-            return count_empty_compartments(
+            return empty_compartments_detail(
                 self._fetch(origin_code, destination_code, departure_datetime, train_number, provider)
             )
         except Exception as e:
             logger.error(f"Схема вагонов недоступна ({train_number}): {e}")
             return None
+
+    def empty_compartments(self, origin_code: str, destination_code: str,
+                           departure_datetime: str, train_number: str,
+                           provider: str = "P1"):
+        """Число полностью свободных купе поезда или None при сетевой ошибке."""
+        detail = self.empty_compartments_detail(
+            origin_code, destination_code, departure_datetime, train_number, provider
+        )
+        return None if detail is None else len(detail)

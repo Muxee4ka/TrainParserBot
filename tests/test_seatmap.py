@@ -1,4 +1,6 @@
-from services.rzd_seatmap import count_empty_compartments, SeatMapService
+from services.rzd_seatmap import (
+    count_empty_compartments, empty_compartments_detail, format_empty_cabins, SeatMapService,
+)
 
 
 def _payload():
@@ -28,6 +30,19 @@ def _payload():
 def test_count_empty_compartments_merges_rows():
     # купе 1 (1,2,3,4), 3 (9,10,11,12), 4 (13,14,15,16) — полные; 2 (6,8) — нет
     assert count_empty_compartments(_payload()) == 3
+
+
+def test_empty_compartments_detail_has_place_numbers():
+    detail = empty_compartments_detail(_payload())
+    assert [d["compartment"] for d in detail] == ["1", "3", "4"]  # отсортировано
+    comp3 = next(d for d in detail if d["compartment"] == "3")
+    assert comp3["car"] == "27" and comp3["places"] == [9, 10, 11, 12]
+
+
+def test_format_empty_cabins():
+    detail = empty_compartments_detail(_payload())
+    assert format_empty_cabins(detail) == "вагон 27: купе 1, 3, 4"
+    assert format_empty_cabins([], ) == ""
 
 
 def test_count_empty_compartments_empty_payload():

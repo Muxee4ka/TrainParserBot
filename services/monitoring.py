@@ -180,9 +180,17 @@ class MonitoringService:
 
             unit = matched_unit(berth)
             if berth == 'cabin':
-                # точный подсчёт пустых купе через схему вагонов (та же логика, что и в триггере)
-                count = self.count_matched(self.rzd_api, subscription, train)
-                message += f"   ✅ Доступно ({unit}): {count}\n"
+                # точный список пустых купе через схему вагонов (с номерами)
+                from services.rzd_seatmap import SeatMapService, format_empty_cabins
+                detail = SeatMapService().empty_compartments_detail(
+                    subscription.origin_code, subscription.destination_code,
+                    train.get('LocalDepartureDateTime'),
+                    train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
+                    train.get('Provider', 'P1'),
+                ) or []
+                message += f"   ✅ Доступно ({unit}): {len(detail)}\n"
+                if detail:
+                    message += f"   🚪 {format_empty_cabins(detail)}\n"
             else:
                 m = self.rzd_api.match_seats(
                     train, car_types=car_types or None, berth=berth, max_price=max_price

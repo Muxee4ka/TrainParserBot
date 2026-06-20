@@ -56,6 +56,87 @@ class SearchHandler(BaseHandler):
         )
         return msg
 
+    _WEEKDAYS_RU = ['пн', 'вт', 'ср', 'чт', 'пт', 'сб', 'вс']
+
+    def _date_keyboard(self, days: int = 14) -> list:
+        """Кнопки выбора даты на ближайшие N дней (по 2 в ряд)."""
+        from datetime import date, timedelta
+        today = date.today()
+        rows, row = [], []
+        for i in range(days):
+            d = today + timedelta(days=i)
+            if i == 0:
+                label = f"Сегодня {d.strftime('%d.%m')}"
+            elif i == 1:
+                label = f"Завтра {d.strftime('%d.%m')}"
+            else:
+                label = f"{d.strftime('%d.%m')} ({self._WEEKDAYS_RU[d.weekday()]})"
+            row.append({"text": label, "callback_data": f"pickdate_{d.strftime('%Y-%m-%d')}"})
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        return rows
+
+    def _build_train_list(self, trains_data: dict):
+        """Строит (текст, клавиатуру) списка поездов для выбора."""
+        trains = trains_data.get('trains', [])
+        text = f"Найдено поездов: {trains_data.get('total_count', len(trains))}\nВыберите поезд для отслеживания:"
+        keyboard = []
+        for i, train in enumerate(trains, 1):
+            t = self.rzd_api.extract_train_info(train)
+            number = t['number']
+            duration = f" ({t['duration']})" if t['duration'] else ''
+            price = self.rzd_api.min_price(train)
+            price_str = f" · от {price:.0f} ₽" if price else ''
+            brand = " 🔹ФИРМ" if train.get('IsBranded') else ''
+            text += f"\n{i}. 🚂 <b>{number}</b>{brand} {t['name']} {t['departure']}→{t['arrival']}{duration}{price_str}"
+            btn_parts = [f"🚆 {number}"]
+            if train.get('IsBranded'):
+                btn_parts.append("ФИРМ")
+            if t['name']:
+                btn_parts.append(t['name'])
+            if price:
+                btn_parts.append(f"от {price:.0f} ₽")
+            keyboard.append([{
+                "text": " · ".join(btn_parts),
+                "callback_data": f"select_train_{number}_{t['name'][:20].replace(' ', '')}"
+            }])
+        return text, keyboard
+
+    async def _load_and_show_trains(self, chat_id: int, search_state: SearchState):
+        """Ищет поезда по выбранным параметрам и показывает список (общий путь)."""
+        trains_data = await asyncio.to_thread(
+            self.rzd_api.search_trains,
+            origin_code=search_state.origin_code,
+            destination_code=search_state.destination_code,
+            departure_date=search_state.departure_date,
+            adult_passengers=search_state.adult_passengers,
+            children_passengers=search_state.children_passengers,
+        )
+        if not trains_data.get('trains'):
+            progress_text = self.format_progress_message(search_state) + '\n❌ Поезда не найдены на выбранную дату.'
+            await self._edit_progress(chat_id, search_state, progress_text, keyboard=self._date_keyboard())
+            return
+        text, keyboard = self._build_train_list(trains_data)
+        progress_text = self.format_progress_message(search_state) + '\n' + text
+        if len(progress_text) > config.MAX_MESSAGE_LENGTH:
+            progress_text = progress_text[:config.MAX_MESSAGE_LENGTH] + "\n\n... (сообщение обрезано)"
+        await self._edit_progress(chat_id, search_state, progress_text, keyboard=keyboard)
+
+    async def _edit_progress(self, chat_id: int, search_state: SearchState, text: str, keyboard=None):
+        """Редактирует прогресс-сообщение на месте либо отправляет новое (с сохранением id)."""
+        if search_state.progress_message_id:
+            await self.notification_service.edit_message(
+                chat_id, search_state.progress_message_id, text, keyboard=keyboard, parse_mode='HTML'
+            )
+        else:
+            sent_id = await self.notification_service.send_message_with_keyboard(chat_id, text, keyboard or [])
+            if sent_id:
+                search_state.progress_message_id = sent_id
+        self.db_manager.save_search_state(search_state)
+
     def _panel_text(self, breakdown: dict, matched: dict, filter_summary: str,
                     matched_unit: str = "мест") -> str:
         by_type = " · ".join(f"{k} {v}" for k, v in breakdown.get("by_type", {}).items()) or "—"
@@ -166,6 +247,8 @@ class SearchHandler(BaseHandler):
             data = callback.data
             if data.startswith("station_"):
                 await self.handle_station_selection(callback)
+            elif data.startswith("pickdate_"):
+                await self.handle_date_pick(callback)
             elif data == "search_trains":
                 await self.search_trains(callback)
             elif data == "subscribe_search":
@@ -244,7 +327,7 @@ class SearchHandler(BaseHandler):
                 search_state.destination_code = station_code
                 search_state.destination_name = station_name
                 search_state.search_step = 'date'
-                next_step = '\nТеперь укажите дату поездки в формате ДД.ММ.ГГГГ:'
+                next_step = '\nВыберите дату поездки кнопкой ниже (или введите вручную ДД.ММ.ГГГГ):'
                 logger.info(f"[handle_station_selection] user_id={user_id} set search_step=date")
             else:
                 await callback.answer('❌ Неожиданный этап выбора станции')
@@ -252,16 +335,22 @@ class SearchHandler(BaseHandler):
             self.db_manager.save_search_state(search_state)
             logger.info(f"[handle_station_selection] user_id={user_id} search_step(after)={search_state.search_step}")
             progress_text = self.format_progress_message(search_state) + next_step
+            # на шаге даты показываем календарь-кнопки
+            step_keyboard = self._date_keyboard() if search_state.search_step == 'date' else None
             if search_state.progress_message_id:
                 await self.notification_service.edit_message(
                     callback.message.chat.id,
                     search_state.progress_message_id,
                     progress_text,
+                    keyboard=step_keyboard,
                     parse_mode='HTML'
                 )
             else:
-                sent = await callback.message.answer(progress_text, parse_mode='HTML')
-                search_state.progress_message_id = sent.message_id
+                sent_id = await self.notification_service.send_message_with_keyboard(
+                    callback.message.chat.id, progress_text, step_keyboard or []
+                )
+                if sent_id:
+                    search_state.progress_message_id = sent_id
                 self.db_manager.save_search_state(search_state)
             # Удаляем все сообщения пользователя кроме progress_message_id
             await self._delete_user_messages(callback.message.chat.id, search_state)
@@ -270,126 +359,51 @@ class SearchHandler(BaseHandler):
             logger.error(f'Ошибка обработки выбора станции: {e}')
             await callback.answer('❌ Ошибка при обработке выбора станции')
     
-    async def handle_date_input(self, message: Message, search_state: SearchState):
-        """Обработка ввода даты (теперь после даты — этап выбора поезда)"""
+    async def _apply_date_and_show_trains(self, chat_id: int, search_state: SearchState, date_obj):
+        """Общий путь после выбора даты (кнопкой или вводом): валидация + список поездов."""
+        if date_obj.date() < datetime.now().date():
+            progress_text = self.format_progress_message(search_state) + '\n❌ Дата не может быть в прошлом. Выберите будущую дату.'
+            await self._edit_progress(chat_id, search_state, progress_text, keyboard=self._date_keyboard())
+            await self._delete_user_messages(chat_id, search_state)
+            return
+        search_state.departure_date = date_obj.strftime("%Y-%m-%dT00:00:00")
+        search_state.search_step = 'train'
+        self.db_manager.save_search_state(search_state)
+        await self._load_and_show_trains(chat_id, search_state)
+        await self._delete_user_messages(chat_id, search_state)
+
+    async def handle_date_pick(self, callback: CallbackQuery):
+        """Выбор даты кнопкой-календарём (callback pickdate_YYYY-MM-DD)."""
         try:
-            date_text = message.text.strip()
-            date_obj = datetime.strptime(date_text, "%d.%m.%Y")
-            # Разрешаем сегодняшнюю дату: сравниваем по дате без времени
-            if date_obj.date() < datetime.now().date():
-                progress_text = self.format_progress_message(search_state) + '\n❌ Дата не может быть в прошлом. Укажите будущую дату.'
-                if search_state.progress_message_id:
-                    await self.notification_service.edit_message(
-                        message.chat.id,
-                        search_state.progress_message_id,
-                        progress_text,
-                        parse_mode='HTML'
-                    )
-                else:
-                    sent = await message.answer(progress_text, parse_mode='HTML')
-                    search_state.messages_to_delete.append(sent.message_id)
-                    self.db_manager.save_search_state(search_state)
-                # Удаляем все сообщения пользователя кроме progress_message_id
-                await self._delete_user_messages(message.chat.id, search_state)
+            user_id = callback.from_user.id
+            search_state = self.db_manager.get_search_state(user_id)
+            if not search_state:
+                await callback.answer('❌ Ошибка состояния поиска')
                 return
-            formatted_date = date_obj.strftime("%Y-%m-%dT00:00:00")
-            search_state.departure_date = formatted_date
-            search_state.search_step = 'train'
-            self.db_manager.save_search_state(search_state)
-            # Поиск поездов через API (блокирующий requests — уводим в поток)
-            trains_data = await asyncio.to_thread(
-                self.rzd_api.search_trains,
-                origin_code=search_state.origin_code,
-                destination_code=search_state.destination_code,
-                departure_date=search_state.departure_date,
-                adult_passengers=search_state.adult_passengers,
-                children_passengers=search_state.children_passengers
-            )
-            trains = trains_data.get('trains', [])
-            if not trains:
-                progress_text = self.format_progress_message(search_state) + '\n❌ Поезда не найдены на выбранную дату.'
-                if search_state.progress_message_id:
-                    await self.notification_service.edit_message(
-                        message.chat.id,
-                        search_state.progress_message_id,
-                        progress_text,
-                        parse_mode='HTML'
-                    )
-                else:
-                    sent = await message.answer(progress_text, parse_mode='HTML')
-                    search_state.messages_to_delete.append(sent.message_id)
-                    self.db_manager.save_search_state(search_state)
-                # Удаляем все сообщения пользователя кроме progress_message_id
-                await self._delete_user_messages(message.chat.id, search_state)
-                return
-            message_text = f"Найдено поездов: {trains_data['total_count']}\nВыберите поезд для отслеживания:"
-            keyboard = []
-            for i, train in enumerate(trains, 1):
-                t = self.rzd_api.extract_train_info(train)
-                train_number = t['number']
-                duration = f" ({t['duration']})" if t['duration'] else ''
-                price = self.rzd_api.min_price(train)
-                price_str = f" · от {price:.0f} ₽" if price else ''
-                message_text += f"\n{i}. 🚂 <b>{train_number}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}{price_str}"
-                # Обогащённый текст кнопки: 🚆 номер · название · от цена ₽
-                btn_parts = [f"🚆 {train_number}"]
-                if t['name']:
-                    btn_parts.append(t['name'])
-                if price:
-                    btn_parts.append(f"от {price:.0f} ₽")
-                keyboard.append([{
-                    "text": " · ".join(btn_parts),
-                    "callback_data": f"select_train_{train_number}_{t['name'][:20].replace(' ', '')}"
-                }])
-            progress_text = self.format_progress_message(search_state) + '\n' + message_text
-            if len(progress_text) > config.MAX_MESSAGE_LENGTH:
-                progress_text = progress_text[:config.MAX_MESSAGE_LENGTH] + "\n\n... (сообщение обрезано)"
-            if search_state.progress_message_id:
-                await self.notification_service.edit_message(
-                    message.chat.id,
-                    search_state.progress_message_id,
-                    progress_text,
-                    keyboard=keyboard,
-                    parse_mode='HTML'
-                )
-            else:
-                sent = await message.answer(progress_text, parse_mode='HTML')
-                search_state.progress_message_id = sent.message_id
-                self.db_manager.save_search_state(search_state)
-            # Удаляем все сообщения пользователя кроме progress_message_id
-            await self._delete_user_messages(message.chat.id, search_state)
+            date_obj = datetime.strptime(callback.data.split('_', 1)[1], "%Y-%m-%d")
+            await callback.answer("Ищу поезда…")
+            await self._apply_date_and_show_trains(callback.message.chat.id, search_state, date_obj)
+        except Exception as e:
+            logger.error(f"Ошибка выбора даты кнопкой: {e}")
+            await callback.answer('❌ Ошибка при выборе даты')
+
+    async def handle_date_input(self, message: Message, search_state: SearchState):
+        """Обработка ручного ввода даты (ДД.ММ.ГГГГ)."""
+        try:
+            date_obj = datetime.strptime(message.text.strip(), "%d.%m.%Y")
         except ValueError:
-            progress_text = self.format_progress_message(search_state) + '\nНеверный формат даты. Используйте формат ДД.ММ.ГГГГ (например: 15.01.2025)'
-            if search_state.progress_message_id:
-                await self.notification_service.edit_message(
-                    message.chat.id,
-                    search_state.progress_message_id,
-                    progress_text,
-                    parse_mode='HTML'
-                )
-            else:
-                sent = await message.answer(progress_text, parse_mode='HTML')
-                search_state.messages_to_delete.append(sent.message_id)
-                self.db_manager.save_search_state(search_state)
-            # Удаляем все сообщения пользователя кроме progress_message_id
+            progress_text = self.format_progress_message(search_state) + '\nНеверный формат даты. Используйте кнопки ниже или формат ДД.ММ.ГГГГ (например: 15.01.2026)'
+            await self._edit_progress(message.chat.id, search_state, progress_text, keyboard=self._date_keyboard())
             await self._delete_user_messages(message.chat.id, search_state)
+            return
+        try:
+            await self._apply_date_and_show_trains(message.chat.id, search_state, date_obj)
         except Exception as e:
             logger.error(f"Ошибка обработки даты: {e}")
             progress_text = self.format_progress_message(search_state) + '\n❌ Ошибка при обработке даты'
-            if search_state.progress_message_id:
-                await self.notification_service.edit_message(
-                    message.chat.id,
-                    search_state.progress_message_id,
-                    progress_text,
-                    parse_mode='HTML'
-                )
-            else:
-                sent = await message.answer(progress_text, parse_mode='HTML')
-                search_state.messages_to_delete.append(sent.message_id)
-                self.db_manager.save_search_state(search_state)
-            # Удаляем все сообщения пользователя кроме progress_message_id
+            await self._edit_progress(message.chat.id, search_state, progress_text, keyboard=self._date_keyboard())
             await self._delete_user_messages(message.chat.id, search_state)
-    
+
     async def search_trains(self, callback: CallbackQuery):
         """Поиск поездов"""
         try:
@@ -714,11 +728,19 @@ class SearchHandler(BaseHandler):
                 duration = f" ({t['duration']})" if t['duration'] else ''
                 line = f"🚂 <b>{t['number']}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}\n"
                 if berth == 'cabin':
-                    # точный подсчёт пустых купе через схему вагонов (сетевой запрос — в поток)
-                    count = await asyncio.to_thread(
-                        MonitoringService.count_matched, self.rzd_api, subscription, train
+                    # точный список пустых купе через схему вагонов (сетевой запрос — в поток)
+                    from services.rzd_seatmap import SeatMapService, format_empty_cabins
+                    detail = await asyncio.to_thread(
+                        SeatMapService().empty_compartments_detail,
+                        subscription.origin_code, subscription.destination_code,
+                        train.get('LocalDepartureDateTime'),
+                        train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
+                        train.get('Provider', 'P1'),
                     )
-                    line += f"   ✅ {unit}: {count}" if count > 0 else f"   ❌ нет ({unit})"
+                    if detail:
+                        line += f"   ✅ {unit}: {len(detail)}\n   🚪 {format_empty_cabins(detail)}"
+                    else:
+                        line += f"   ❌ нет ({unit})"
                 else:
                     seats = self.rzd_api.match_seats(
                         train, car_types=car_types or None, berth=berth, max_price=max_price
