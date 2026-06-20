@@ -211,6 +211,43 @@ class RZDAPIService:
             logger.error(f"Ошибка разбивки мест в поезде: {e}")
         return result
 
+    def match_seats(self, train: Dict, car_types=None, berth: str = 'any',
+                    max_price: int = 0) -> Dict:
+        """Считает места, подходящие под фильтры подписки.
+
+        car_types: коллекция кодов CarType (или None/пусто = любой).
+        berth: 'any' | 'lower' | 'upper' (низ=Lower+LowerSide, верх=Upper+UpperSide).
+        max_price: потолок цены в рублях (0 = любая), сравнение с MinPrice группы.
+        """
+        result = {'total': 0, 'lower': 0, 'upper': 0, 'min_price': None, 'by_type': {}}
+        wanted = set(car_types) if car_types else None
+        try:
+            for cg in train.get('CarGroups', []):
+                if cg.get('AvailabilityIndication') != 'Available':
+                    continue
+                if wanted is not None and cg.get('CarType') not in wanted:
+                    continue
+                price = cg.get('MinPrice')
+                if max_price and price and price > max_price:
+                    continue
+                lower = (cg.get('LowerPlaceQuantity', 0) or 0) + (cg.get('LowerSidePlaceQuantity', 0) or 0)
+                upper = (cg.get('UpperPlaceQuantity', 0) or 0) + (cg.get('UpperSidePlaceQuantity', 0) or 0)
+                if berth == 'lower' and lower <= 0:
+                    continue
+                if berth == 'upper' and upper <= 0:
+                    continue
+                qty = cg.get('PlaceQuantity', 0) or 0
+                result['total'] += qty
+                result['lower'] += lower
+                result['upper'] += upper
+                name = cg.get('CarTypeName') or cg.get('CarType') or '?'
+                result['by_type'][name] = result['by_type'].get(name, 0) + qty
+                if price and (result['min_price'] is None or price < result['min_price']):
+                    result['min_price'] = price
+        except Exception as e:
+            logger.error(f"Ошибка match_seats: {e}")
+        return result
+
     def min_price(self, train: Dict) -> Optional[float]:
         """Минимальная цена среди доступных вагонов (None, если мест нет)"""
         try:
