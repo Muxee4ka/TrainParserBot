@@ -1,6 +1,42 @@
 from services.rzd_seatmap import (
-    count_empty_compartments, empty_compartments_detail, format_empty_cabins, SeatMapService,
+    count_empty_compartments, empty_compartments_detail, format_empty_cabins,
+    pair_compartments_detail, detail_for_berth, format_pairs, SeatMapService,
 )
+
+
+def _payload_typed():
+    # вагон разбит на строки по типу полки (CarPlaceNameRu), как реальный CarPricing
+    return {"Cars": [
+        {"CarType": "Compartment", "CarNumber": "27", "CarPlaceNameRu": "Нижнее",
+         "FreePlacesByCompartments": [
+             {"CompartmentNumber": "1", "Places": "1, 3"},   # купе 1: только низ
+             {"CompartmentNumber": "2", "Places": "5"},       # купе 2: низ
+         ]},
+        {"CarType": "Compartment", "CarNumber": "27", "CarPlaceNameRu": "Верхнее",
+         "FreePlacesByCompartments": [
+             {"CompartmentNumber": "2", "Places": "6, 8"},    # купе 2: верх -> пара!
+             {"CompartmentNumber": "3", "Places": "10, 12"},  # купе 3: только верх
+         ]},
+    ]}
+
+
+def test_pair_compartments_detail():
+    detail = pair_compartments_detail(_payload_typed())
+    # пара низ+верх только в купе 2
+    assert len(detail) == 1
+    d = detail[0]
+    assert d["car"] == "27" and d["compartment"] == "2"
+    assert d["lower"] == [5] and d["upper"] == [6, 8]
+
+
+def test_detail_for_berth_routes():
+    assert detail_for_berth(_payload_typed(), "pair") == pair_compartments_detail(_payload_typed())
+    assert detail_for_berth(_payload_typed(), "cabin") == empty_compartments_detail(_payload_typed())
+
+
+def test_format_pairs():
+    detail = pair_compartments_detail(_payload_typed())
+    assert format_pairs(detail) == "вагон 27: купе 2 (низ 5, верх 6, 8)"
 
 
 def _payload():

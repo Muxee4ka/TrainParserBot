@@ -1,14 +1,15 @@
-"""Подсчёт полностью свободных купе через схему вагонов РЖД (CarPricing).
+"""Анализ схемы вагонов РЖД (CarPricing) для фильтров, требующих расположения мест.
 
-Агрегатное поле EmptyCabinQuantity из train-pricing ненадёжно (возвращает 0,
-когда пустые купе реально есть). Достоверный источник — эндпоинт CarPricing,
-который отдаёт свободные места, сгруппированные по купе (FreePlacesByCompartments).
-Один физический вагон в ответе разбит на несколько строк (разные тарифы) — их
-объединяем по CarNumber, а места внутри купе — по CompartmentNumber. Купе считаем
-полностью свободным, если в нём свободны все 4 места.
+Агрегатные поля train-pricing не дают: какие конкретно места свободны, нижние они
+или верхние, и в каком купе. Достоверный источник — эндпоинт CarPricing: он отдаёт
+свободные места по купе (FreePlacesByCompartments), а вагон разбит на строки по типу
+полки (CarPlaceNameRu: «Нижнее»/«Верхнее»). Объединяем строки вагона по CarNumber,
+классифицируем места по типу полки и группируем по купе. Отсюда выводим:
+  • пустые купе (berth='cabin') — свободны все 4 места;
+  • пары низ+верх в одном купе/блоке (berth='pair') — есть и нижнее, и верхнее.
 
-Это сетевой запрос на поезд, поэтому используется только под фильтр «купе целиком»
-(berth='cabin'), не в общем цикле мониторинга остальных подписок.
+Это сетевой запрос на поезд, поэтому используется только под эти «тяжёлые» фильтры,
+не в общем цикле мониторинга остальных подписок.
 """
 import logging
 from collections import defaultdict
@@ -25,59 +26,121 @@ CAR_PRICING_URL = (
 )
 # Количество мест в стандартном купе
 COMPARTMENT_SIZE = 4
+# Фильтры полки, требующие схему вагона (сетевой запрос)
+SEATMAP_BERTHS = ('cabin', 'pair')
 
 
-def empty_compartments_detail(payload: dict) -> list:
-    """Список полностью свободных купе с номерами мест.
+def _berth_kind(car: dict) -> str:
+    """Тип полки строки вагона: 'lower' | 'upper' | 'other' по CarPlaceNameRu/Type."""
+    name = (car.get("CarPlaceNameRu") or "").lower()
+    if "ниж" in name:
+        return "lower"
+    if "верх" in name:
+        return "upper"
+    t = car.get("CarPlaceType") or ""
+    if t == "Lower":
+        return "lower"
+    if t == "Upper":
+        return "upper"
+    return "other"
 
-    Объединяет строки одного вагона (CarNumber) и места внутри купе
-    (CompartmentNumber); купе считается пустым, если свободны все 4 места.
-    Возвращает [{'car': '27', 'compartment': '3', 'places': [9,10,11,12]}, ...],
-    отсортированный по вагону и купе. Только купейные вагоны.
-    """
+
+def parse_compartments(payload: dict) -> dict:
+    """car_number -> compartment_number -> {'lower': set, 'upper': set, 'all': set}.
+
+    Объединяет строки одного вагона; классифицирует места по типу полки.
+    Только купейные вагоны (CarType == 'Compartment')."""
+    cars = defaultdict(lambda: defaultdict(lambda: {"lower": set(), "upper": set(), "all": set()}))
     try:
-        # car_number -> compartment_number -> множество свободных мест
-        cars = defaultdict(lambda: defaultdict(set))
         for car in payload.get("Cars") or []:
             if car.get("CarType") != "Compartment":
                 continue
             number = car.get("CarNumber")
+            kind = _berth_kind(car)
             for blk in car.get("FreePlacesByCompartments") or []:
                 comp = blk.get("CompartmentNumber")
                 for p in str(blk.get("Places", "")).split(","):
                     p = p.strip()
-                    if p.isdigit():
-                        cars[number][comp].add(int(p))
-        result = []
-        for number, compartments in cars.items():
-            for comp, places in compartments.items():
-                if len(places) >= COMPARTMENT_SIZE:
-                    result.append({"car": number, "compartment": comp, "places": sorted(places)})
-
-        def _key(d):
-            def _int(v):
-                return int(v) if str(v).isdigit() else 0
-            return (_int(d["car"]), _int(d["compartment"]))
-        result.sort(key=_key)
-        return result
+                    if not p.isdigit():
+                        continue
+                    p = int(p)
+                    cell = cars[number][comp]
+                    cell["all"].add(p)
+                    if kind in ("lower", "upper"):
+                        cell[kind].add(p)
     except Exception as e:
-        logger.error(f"Ошибка разбора пустых купе: {e}")
-        return []
+        logger.error(f"Ошибка разбора схемы вагонов: {e}")
+    return cars
+
+
+def _sort_key(d):
+    def _int(v):
+        return int(v) if str(v).isdigit() else 0
+    return (_int(d["car"]), _int(d["compartment"]))
+
+
+def empty_compartments_detail(payload: dict) -> list:
+    """Полностью свободные купе: [{'car','compartment','places':[...]}], отсортировано."""
+    result = []
+    for number, comps in parse_compartments(payload).items():
+        for comp, cell in comps.items():
+            if len(cell["all"]) >= COMPARTMENT_SIZE:
+                result.append({"car": number, "compartment": comp, "places": sorted(cell["all"])})
+    result.sort(key=_sort_key)
+    return result
+
+
+def pair_compartments_detail(payload: dict) -> list:
+    """Купе/блоки, где свободны и нижнее, и верхнее место (пара друг над другом):
+    [{'car','compartment','lower':[...],'upper':[...]}], отсортировано."""
+    result = []
+    for number, comps in parse_compartments(payload).items():
+        for comp, cell in comps.items():
+            if cell["lower"] and cell["upper"]:
+                result.append({
+                    "car": number, "compartment": comp,
+                    "lower": sorted(cell["lower"]), "upper": sorted(cell["upper"]),
+                })
+    result.sort(key=_sort_key)
+    return result
+
+
+def detail_for_berth(payload: dict, berth: str) -> list:
+    """Детали под нужный фильтр полки ('cabin' | 'pair')."""
+    if berth == "pair":
+        return pair_compartments_detail(payload)
+    return empty_compartments_detail(payload)
 
 
 def count_empty_compartments(payload: dict) -> int:
-    """Число полностью свободных купе (см. empty_compartments_detail)."""
+    """Число полностью свободных купе."""
     return len(empty_compartments_detail(payload))
 
 
 def format_empty_cabins(detail: list, limit: int = 6) -> str:
-    """Человекочитаемый список пустых купе: 'вагон 27: купе 1, 3, 4'."""
+    """Список пустых купе: 'вагон 27: купе 1, 3, 4'."""
     by_car = defaultdict(list)
     for d in detail[:limit]:
         by_car[d["car"]].append(str(d["compartment"]))
     parts = [f"вагон {car}: купе {', '.join(comps)}" for car, comps in by_car.items()]
     tail = f" и ещё {len(detail) - limit}" if len(detail) > limit else ""
     return "; ".join(parts) + tail
+
+
+def format_pairs(detail: list, limit: int = 6) -> str:
+    """Список пар низ+верх: 'вагон 27: купе 3 (низ 9, верх 10)'."""
+    parts = []
+    for d in detail[:limit]:
+        low = ", ".join(map(str, d["lower"]))
+        up = ", ".join(map(str, d["upper"]))
+        parts.append(f"вагон {d['car']}: купе {d['compartment']} (низ {low}, верх {up})")
+    tail = f"; и ещё {len(detail) - limit}" if len(detail) > limit else ""
+    return "; ".join(parts) + tail
+
+
+def format_seatmap_detail(berth: str, detail: list, limit: int = 6) -> str:
+    """Человекочитаемый список под фильтр полки."""
+    return format_pairs(detail, limit) if berth == "pair" else format_empty_cabins(detail, limit)
 
 
 class SeatMapService:
@@ -112,23 +175,31 @@ class SeatMapService:
         resp.raise_for_status()
         return resp.json()
 
-    def empty_compartments_detail(self, origin_code: str, destination_code: str,
-                                  departure_datetime: str, train_number: str,
-                                  provider: str = "P1"):
-        """Список пустых купе с номерами мест или None при сетевой ошибке."""
+    def detail_for_berth(self, berth: str, origin_code: str, destination_code: str,
+                         departure_datetime: str, train_number: str, provider: str = "P1"):
+        """Детали под фильтр полки ('cabin'|'pair') или None при сетевой ошибке."""
         try:
-            return empty_compartments_detail(
-                self._fetch(origin_code, destination_code, departure_datetime, train_number, provider)
-            )
+            payload = self._fetch(origin_code, destination_code, departure_datetime, train_number, provider)
+            return detail_for_berth(payload, berth)
         except Exception as e:
             logger.error(f"Схема вагонов недоступна ({train_number}): {e}")
             return None
 
-    def empty_compartments(self, origin_code: str, destination_code: str,
-                           departure_datetime: str, train_number: str,
-                           provider: str = "P1"):
-        """Число полностью свободных купе поезда или None при сетевой ошибке."""
-        detail = self.empty_compartments_detail(
-            origin_code, destination_code, departure_datetime, train_number, provider
+    def count_for_berth(self, berth: str, origin_code: str, destination_code: str,
+                        departure_datetime: str, train_number: str, provider: str = "P1"):
+        """Число подходящих купе под фильтр полки или None при сетевой ошибке."""
+        detail = self.detail_for_berth(
+            berth, origin_code, destination_code, departure_datetime, train_number, provider
         )
         return None if detail is None else len(detail)
+
+    # обратная совместимость для фильтра «купе целиком»
+    def empty_compartments_detail(self, origin_code, destination_code, departure_datetime,
+                                  train_number, provider="P1"):
+        return self.detail_for_berth('cabin', origin_code, destination_code,
+                                     departure_datetime, train_number, provider)
+
+    def empty_compartments(self, origin_code, destination_code, departure_datetime,
+                           train_number, provider="P1"):
+        return self.count_for_berth('cabin', origin_code, destination_code,
+                                    departure_datetime, train_number, provider)

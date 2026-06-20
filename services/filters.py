@@ -8,15 +8,18 @@ CAR_TYPE_LABELS = {
 }
 CAR_TYPE_ORDER = ["Compartment", "ReservedSeat", "Sedentary", "Soft"]
 PRICE_PRESETS = [3000, 5000, 8000]
-_BERTH_SUMMARY = {"lower": "нижнее", "upper": "верхнее", "side": "боковое", "cabin": "купе целиком"}
-_BERTH_BTN = {"any": "Любая", "lower": "Нижнее", "upper": "Верхнее", "side": "Боковое", "cabin": "🚪 Купе целиком"}
+_BERTH_SUMMARY = {"lower": "нижнее", "upper": "верхнее", "side": "боковое",
+                  "cabin": "купе целиком", "pair": "низ+верх в одном купе"}
+_BERTH_BTN = {"any": "Любая", "lower": "Нижнее", "upper": "Верхнее", "side": "Боковое",
+              "cabin": "🚪 Купе целиком", "pair": "🔼🔽 Низ+Верх вместе"}
 # Порядок кнопок полки (по одной в ряд: низ над верхом)
-_BERTH_ORDER = ["any", "lower", "upper", "side", "cabin"]
+_BERTH_ORDER = ["any", "lower", "upper", "side", "cabin", "pair"]
+_BERTH_UNIT = {"cabin": "пустых купе", "pair": "купе с парой низ+верх"}
 
 
 def matched_unit(berth: str) -> str:
-    """Единица счёта под фильтр: для 'cabin' — купе, иначе — места."""
-    return "пустых купе" if berth == "cabin" else "мест"
+    """Единица счёта под фильтр (для 'cabin'/'pair' — купе, иначе — места)."""
+    return _BERTH_UNIT.get(berth, "мест")
 
 
 def toggle_car_type(csv: str, code: str) -> str:

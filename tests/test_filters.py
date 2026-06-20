@@ -32,7 +32,8 @@ def test_build_filter_keyboard_marks_selected():
     assert "✅ ≤5000" in texts
     # все опции полки присутствуют, каждая своей строкой
     berth_cbs = {b["callback_data"] for row in kb for b in row if b["callback_data"].startswith("flt_berth_")}
-    assert berth_cbs == {"flt_berth_any", "flt_berth_lower", "flt_berth_upper", "flt_berth_side", "flt_berth_cabin"}
+    assert berth_cbs == {"flt_berth_any", "flt_berth_lower", "flt_berth_upper",
+                         "flt_berth_side", "flt_berth_cabin", "flt_berth_pair"}
     sub_btn = next(b for b in flat if b["callback_data"] == "subscribe_filtered")
     assert sub_btn["style"] == "primary"
 

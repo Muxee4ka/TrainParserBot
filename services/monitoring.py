@@ -69,12 +69,13 @@ class MonitoringService:
     def count_matched(rzd_api, subscription, train) -> int:
         """Сколько мест поезда подходит под фильтр подписки.
 
-        Для berth='cabin' считает полностью свободные купе через схему вагонов
-        (CarPricing) — агрегатное EmptyCabinQuantity ненадёжно. Иначе — match_seats.
+        Для berth 'cabin'/'pair' считает купе через схему вагонов (CarPricing) —
+        агрегатных данных недостаточно. Иначе — match_seats.
         """
-        if subscription.berth == 'cabin':
-            from services.rzd_seatmap import SeatMapService
-            n = SeatMapService().empty_compartments(
+        from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS
+        if subscription.berth in SEATMAP_BERTHS:
+            n = SeatMapService().count_for_berth(
+                subscription.berth,
                 subscription.origin_code, subscription.destination_code,
                 train.get('LocalDepartureDateTime'),
                 train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
@@ -182,10 +183,11 @@ class MonitoringService:
             message += f"   ⏰ {t['departure']} → {t['arrival']}{duration}\n"
 
             unit = matched_unit(berth)
-            if berth == 'cabin':
-                # точный список пустых купе через схему вагонов (с номерами)
-                from services.rzd_seatmap import SeatMapService, format_empty_cabins
-                detail = SeatMapService().empty_compartments_detail(
+            from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS, format_seatmap_detail
+            if berth in SEATMAP_BERTHS:
+                # точный список купе через схему вагонов (с номерами)
+                detail = SeatMapService().detail_for_berth(
+                    berth,
                     subscription.origin_code, subscription.destination_code,
                     train.get('LocalDepartureDateTime'),
                     train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
@@ -193,7 +195,7 @@ class MonitoringService:
                 ) or []
                 message += f"   ✅ Доступно ({unit}): {len(detail)}\n"
                 if detail:
-                    message += f"   🚪 {format_empty_cabins(detail)}\n"
+                    message += f"   🚪 {format_seatmap_detail(berth, detail)}\n"
             else:
                 m = self.rzd_api.match_seats(
                     train, car_types=car_types or None, berth=berth, max_price=max_price

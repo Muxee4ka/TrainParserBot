@@ -733,24 +733,24 @@ class SearchHandler(BaseHandler):
             max_price = subscription.max_price
             lines = []
             unit = flt.matched_unit(berth)
+            from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS as seatmap_berths, format_seatmap_detail
             for train in trains_data.get('trains', []):
                 t = self.rzd_api.extract_train_info(train)
                 if allowed and t['number'] not in allowed:
                     continue
                 duration = f" ({t['duration']})" if t['duration'] else ''
                 line = f"🚂 <b>{t['number']}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}\n"
-                if berth == 'cabin':
-                    # точный список пустых купе через схему вагонов (сетевой запрос — в поток)
-                    from services.rzd_seatmap import SeatMapService, format_empty_cabins
+                if berth in seatmap_berths:
+                    # точный список купе через схему вагонов (сетевой запрос — в поток)
                     detail = await asyncio.to_thread(
-                        SeatMapService().empty_compartments_detail,
+                        SeatMapService().detail_for_berth, berth,
                         subscription.origin_code, subscription.destination_code,
                         train.get('LocalDepartureDateTime'),
                         train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                         train.get('Provider', 'P1'),
                     )
                     if detail:
-                        line += f"   ✅ {unit}: {len(detail)}\n   🚪 {format_empty_cabins(detail)}"
+                        line += f"   ✅ {unit}: {len(detail)}\n   🚪 {format_seatmap_detail(berth, detail)}"
                     else:
                         line += f"   ❌ нет ({unit})"
                 else:
@@ -855,11 +855,11 @@ class SearchHandler(BaseHandler):
         train = {'CarGroups': cargroups}
         car_types = [c for c in (search_state.filter_car_types or '').split(',') if c]
         breakdown = self.rzd_api.match_seats(train)
-        if search_state.filter_berth == 'cabin':
-            # точный подсчёт пустых купе через схему вагонов (сетевой запрос — в поток)
-            from services.rzd_seatmap import SeatMapService
+        from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS
+        if search_state.filter_berth in SEATMAP_BERTHS:
+            # точный подсчёт купе через схему вагонов (сетевой запрос — в поток)
             n = await asyncio.to_thread(
-                SeatMapService().empty_compartments,
+                SeatMapService().count_for_berth, search_state.filter_berth,
                 search_state.origin_code, search_state.destination_code, dep,
                 search_state.selected_train_number, provider,
             )
