@@ -104,6 +104,7 @@ class DatabaseManager:
                     ('filter_max_price', "ALTER TABLE search_states ADD COLUMN filter_max_price INTEGER DEFAULT 0"),
                     ('selected_train_cargroups', "ALTER TABLE search_states ADD COLUMN selected_train_cargroups TEXT DEFAULT ''"),
                     ('editing_subscription_id', "ALTER TABLE search_states ADD COLUMN editing_subscription_id INTEGER"),
+                    ('station_options', "ALTER TABLE search_states ADD COLUMN station_options TEXT DEFAULT ''"),
                 ):
                     if col not in scols:
                         cursor.execute(ddl)
@@ -410,8 +411,8 @@ class DatabaseManager:
                 (user_id, origin_code, origin_name, destination_code, destination_name,
                  departure_date, adult_passengers, children_passengers, min_seats,
                  train_numbers, car_types, progress_message_id, selected_train_number, selected_train_info, search_step, updated_at, messages_to_delete,
-                 filter_car_types, filter_berth, filter_max_price, selected_train_cargroups, editing_subscription_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 filter_car_types, filter_berth, filter_max_price, selected_train_cargroups, editing_subscription_id, station_options)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 search_state.user_id,
                 search_state.origin_code,
@@ -435,6 +436,7 @@ class DatabaseManager:
                 getattr(search_state, 'filter_max_price', 0),
                 getattr(search_state, 'selected_train_cargroups', ''),
                 getattr(search_state, 'editing_subscription_id', None),
+                getattr(search_state, 'station_options', ''),
             ))
             conn.commit()
         except Exception as e:
@@ -451,7 +453,7 @@ class DatabaseManager:
                 SELECT user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, adult_passengers, children_passengers, min_seats,
                        train_numbers, car_types, progress_message_id, selected_train_number, selected_train_info, search_step, messages_to_delete,
-                       filter_car_types, filter_berth, filter_max_price, selected_train_cargroups, editing_subscription_id
+                       filter_car_types, filter_berth, filter_max_price, selected_train_cargroups, editing_subscription_id, station_options
                 FROM search_states
                 WHERE user_id = ?
             ''', (user_id,))
@@ -479,7 +481,8 @@ class DatabaseManager:
                     filter_berth=row[17] or 'any',
                     filter_max_price=row[18] or 0,
                     selected_train_cargroups=row[19] or '',
-                    editing_subscription_id=row[20]
+                    editing_subscription_id=row[20],
+                    station_options=row[21] or ''
                 )
             return None
         except Exception as e:

@@ -36,6 +36,15 @@ def test_search_state_roundtrip_with_filters():
     assert got.filter_max_price == 5000 and got.selected_train_cargroups == '[{"x":1}]'
     assert got.editing_subscription_id == 42
 
+
+def test_search_state_station_options_roundtrip():
+    from database import SearchState
+    db = _fresh_db()
+    st = SearchState(user_id=7, station_options='{"2060001": "Нижний Новгород Московский"}')
+    db.save_search_state(st)
+    got = db.get_search_state(7)
+    assert got.station_options == '{"2060001": "Нижний Новгород Московский"}'
+
 def test_update_subscription_filters():
     from database import Subscription
     from datetime import datetime

@@ -218,13 +218,25 @@ class SearchHandler(BaseHandler):
                 self.db_manager.save_search_state(search_state)
                 return
             keyboard = []
+            options = {}  # код -> имя, чтобы надёжно восстановить имя (callback не вмещает длинные)
             for station in stations:
                 station_name = self.rzd_api.format_station_name(station)
                 callback_data = self.rzd_api.create_safe_callback_data(station)
+                code = str(station.get('expressCode', ''))
+                if code:
+                    options[code] = station_name
                 keyboard.append([{
                     "text": f"🚉 {station_name}",
                     "callback_data": callback_data
                 }])
+            # запоминаем карту код->имя (объединяем с прошлой, чтобы хватило на оба шага)
+            try:
+                prev = json.loads(search_state.station_options or '{}')
+            except Exception:
+                prev = {}
+            prev.update(options)
+            search_state.station_options = json.dumps(prev, ensure_ascii=False)
+            self.db_manager.save_search_state(search_state)
             prompt = 'Выберите станцию отправления:' if step == 'origin' else 'Выберите станцию назначения:'
             sent_id = await self.notification_service.send_message_with_keyboard(
                 message.from_user.id,
@@ -297,20 +309,20 @@ class SearchHandler(BaseHandler):
                 await callback.answer('❌ Ошибка при обработке выбора станции')
                 return
             station_code = parts[1]
-            # Если в callback_data нет названия, ищем его по коду
-            if len(parts) > 2 and parts[2].strip():
-                station_name = parts[2]
-            else:
-                # Поиск названия станции по коду через API
-                stations = await asyncio.to_thread(self.rzd_api.search_stations, station_code)
-                station_name = station_code
-                for st in stations:
-                    if str(st.get('expressCode')) == str(station_code):
-                        station_name = self.rzd_api.format_station_name(st)
-                        break
             search_state = self.db_manager.get_search_state(user_id)
             if not search_state:
                 search_state = SearchState(user_id=user_id)
+            # Имя станции: 1) из карты код->имя (надёжно, callback не вмещает длинные),
+            # 2) из callback, 3) фолбэк — код.
+            try:
+                options = json.loads(search_state.station_options or '{}')
+            except Exception:
+                options = {}
+            station_name = options.get(station_code)
+            if not station_name and len(parts) > 2 and parts[2].strip():
+                station_name = parts[2]
+            if not station_name:
+                station_name = station_code
             # Если сообщение с кнопками не совпадает с progress_message, добавить в messages_to_delete
             if callback.message.message_id != search_state.progress_message_id:
                 search_state.messages_to_delete.append(callback.message.message_id)
