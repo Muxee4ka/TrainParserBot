@@ -8,8 +8,15 @@ CAR_TYPE_LABELS = {
 }
 CAR_TYPE_ORDER = ["Compartment", "ReservedSeat", "Sedentary", "Soft"]
 PRICE_PRESETS = [3000, 5000, 8000]
-_BERTH_SUMMARY = {"lower": "нижнее", "upper": "верхнее"}
-_BERTH_BTN = {"lower": "Низ", "upper": "Верх", "any": "Любая"}
+_BERTH_SUMMARY = {"lower": "нижнее", "upper": "верхнее", "side": "боковое", "cabin": "купе целиком"}
+_BERTH_BTN = {"any": "Любая", "lower": "Нижнее", "upper": "Верхнее", "side": "Боковое", "cabin": "🚪 Купе целиком"}
+# Порядок кнопок полки (по одной в ряд: низ над верхом)
+_BERTH_ORDER = ["any", "lower", "upper", "side", "cabin"]
+
+
+def matched_unit(berth: str) -> str:
+    """Единица счёта под фильтр: для 'cabin' — купе, иначе — места."""
+    return "пустых купе" if berth == "cabin" else "мест"
 
 
 def toggle_car_type(csv: str, code: str) -> str:
@@ -47,35 +54,29 @@ def format_filter_summary(car_types: str, berth: str, max_price: int) -> str:
     return " · ".join(parts) if parts else "любые места"
 
 
+def _btn(text: str, callback_data: str, selected: bool = False) -> dict:
+    """Кнопка фильтра; выбранная подсвечивается зелёным (Bot API 9.4 style)."""
+    b = {"text": f"✅ {text}" if selected else text, "callback_data": callback_data}
+    if selected:
+        b["style"] = "success"
+    return b
+
+
 def build_filter_keyboard(car_types: str, berth: str, max_price: int) -> list:
     """Inline-клавиатура тогглов фильтров."""
     codes = set(c for c in (car_types or "").split(",") if c)
 
-    car_row = []
-    for code in CAR_TYPE_ORDER:
-        label = CAR_TYPE_LABELS[code]
-        text = f"✅ {label}" if code in codes else label
-        car_row.append({"text": text, "callback_data": f"flt_car_{code}"})
+    car_row = [_btn(CAR_TYPE_LABELS[code], f"flt_car_{code}", code in codes) for code in CAR_TYPE_ORDER]
 
-    berth_row = []
-    for val in ("lower", "upper", "any"):
-        text = _BERTH_BTN[val]
-        if berth == val:
-            text = f"✅ {text}"
-        berth_row.append({"text": text, "callback_data": f"flt_berth_{val}"})
+    # Полка — по одной кнопке в ряд (низ над верхом)
+    berth_rows = [[_btn(_BERTH_BTN[val], f"flt_berth_{val}", berth == val)] for val in _BERTH_ORDER]
 
-    price_row = []
-    for p in PRICE_PRESETS:
-        text = f"≤{p}"
-        if max_price == p:
-            text = f"✅ {text}"
-        price_row.append({"text": text, "callback_data": f"flt_price_{p}"})
-    any_price = "Любая" if max_price else "✅ Любая"
-    price_row.append({"text": any_price, "callback_data": "flt_price_0"})
+    price_row = [_btn(f"≤{p}", f"flt_price_{p}", max_price == p) for p in PRICE_PRESETS]
+    price_row.append(_btn("Любая", "flt_price_0", not max_price))
 
     return [
         car_row,
-        berth_row,
+        *berth_rows,
         price_row,
-        [{"text": "🔔 Подписаться", "callback_data": "subscribe_filtered"}],
+        [{"text": "🔔 Подписаться", "callback_data": "subscribe_filtered", "style": "primary"}],
     ]

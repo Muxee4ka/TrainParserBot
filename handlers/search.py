@@ -55,16 +55,18 @@ class SearchHandler(BaseHandler):
         )
         return msg
 
-    def _panel_text(self, breakdown: dict, matched: dict, filter_summary: str) -> str:
+    def _panel_text(self, breakdown: dict, matched: dict, filter_summary: str,
+                    matched_unit: str = "мест") -> str:
         by_type = " · ".join(f"{k} {v}" for k, v in breakdown.get("by_type", {}).items()) or "—"
         price = breakdown.get("min_price")
         price_str = f" · от {price:.0f} ₽" if price else ""
+        berths = f"низ {breakdown.get('lower', 0)} / верх {breakdown.get('upper', 0)} / бок {breakdown.get('side', 0)}"
         return (
             f"🚆 <b>Наличие мест</b>\n"
             f"Найдено мест: {breakdown.get('total', 0)}\n"
-            f"{by_type}  |  низ {breakdown.get('lower', 0)} / верх {breakdown.get('upper', 0)}{price_str}\n\n"
+            f"{by_type}  |  {berths}{price_str}\n\n"
             f"Фильтр: <b>{filter_summary}</b>\n"
-            f"Под фильтр подходит: {matched.get('total', 0)} мест\n\n"
+            f"Под фильтр подходит: {matched.get('total', 0)} {matched_unit}\n\n"
             f"Настройте фильтр кнопками ниже и нажмите «Подписаться»."
         )
 
@@ -707,15 +709,17 @@ class SearchHandler(BaseHandler):
                     train, car_types=car_types or None, berth=berth, max_price=max_price
                 )
                 duration = f" ({t['duration']})" if t['duration'] else ''
+                unit = flt.matched_unit(berth)
                 line = f"🚂 <b>{t['number']}</b> {t['name']} {t['departure']}→{t['arrival']}{duration}\n"
                 if seats['total'] > 0:
-                    line += f"   ✅ мест: {seats['total']}"
-                    if seats['lower'] or seats['upper']:
+                    line += f"   ✅ {unit}: {seats['total']}"
+                    # детализацию низ/верх показываем только когда не считаем купе целиком
+                    if berth != 'cabin' and (seats['lower'] or seats['upper']):
                         line += f" (низ {seats['lower']} / верх {seats['upper']})"
                     if seats['min_price']:
                         line += f" · от {seats['min_price']:.0f} ₽"
                 else:
-                    line += "   ❌ нет мест"
+                    line += f"   ❌ нет ({unit})"
                 lines.append(line)
 
             summary = flt.format_filter_summary(subscription.car_types, berth, max_price)
@@ -729,7 +733,7 @@ class SearchHandler(BaseHandler):
             url = self.rzd_api.build_purchase_url(
                 subscription.origin_code, subscription.destination_code, subscription.departure_date
             )
-            keyboard = [[{"text": "🎫 Купить на РЖД", "url": url}]]
+            keyboard = [[{"text": "🎫 Купить на РЖД", "url": url, "style": "success"}]]
             await self.notification_service.send_message(user_id, header + body, keyboard=keyboard)
         except Exception as e:
             logger.error(f"Ошибка мгновенной проверки подписки: {e}")
@@ -793,7 +797,8 @@ class SearchHandler(BaseHandler):
         summary = flt.format_filter_summary(
             search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
         )
-        text = self._panel_text(breakdown, matched, summary)
+        text = self._panel_text(breakdown, matched, summary,
+                                matched_unit=flt.matched_unit(search_state.filter_berth))
         keyboard = flt.build_filter_keyboard(
             search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
         )

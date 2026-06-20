@@ -229,10 +229,12 @@ class RZDAPIService:
         """Считает места, подходящие под фильтры подписки.
 
         car_types: коллекция кодов CarType (или None/пусто = любой).
-        berth: 'any' | 'lower' | 'upper' (низ=Lower+LowerSide, верх=Upper+UpperSide).
+        berth: 'any' | 'lower' | 'upper' | 'side' | 'cabin'
+            low/верх — основные (не боковые), 'side' — боковые (LowerSide+UpperSide),
+            'cabin' — полностью свободные купе (EmptyCabinQuantity).
         max_price: потолок цены в рублях (0 = любая), сравнение с MinPrice группы.
         """
-        result = {'total': 0, 'lower': 0, 'upper': 0, 'min_price': None, 'by_type': {}}
+        result = {'total': 0, 'lower': 0, 'upper': 0, 'side': 0, 'min_price': None, 'by_type': {}}
         wanted = set(car_types) if car_types else None
         try:
             for cg in train.get('CarGroups', []):
@@ -243,22 +245,27 @@ class RZDAPIService:
                 price = cg.get('MinPrice')
                 if max_price and price and price > max_price:
                     continue
-                lower = (cg.get('LowerPlaceQuantity', 0) or 0) + (cg.get('LowerSidePlaceQuantity', 0) or 0)
-                upper = (cg.get('UpperPlaceQuantity', 0) or 0) + (cg.get('UpperSidePlaceQuantity', 0) or 0)
-                # При фильтре по полке считаем именно места нужной полки, иначе — все доступные
+                main_lower = cg.get('LowerPlaceQuantity', 0) or 0
+                main_upper = cg.get('UpperPlaceQuantity', 0) or 0
+                side = (cg.get('LowerSidePlaceQuantity', 0) or 0) + (cg.get('UpperSidePlaceQuantity', 0) or 0)
+                cabins = cg.get('EmptyCabinQuantity', 0) or 0
+                # Сколько мест в группе подходит под выбранную категорию полки
                 if berth == 'lower':
-                    if lower <= 0:
-                        continue
-                    matched = lower
+                    matched = main_lower
                 elif berth == 'upper':
-                    if upper <= 0:
-                        continue
-                    matched = upper
+                    matched = main_upper
+                elif berth == 'side':
+                    matched = side
+                elif berth == 'cabin':
+                    matched = cabins
                 else:
                     matched = self._available_count(cg)
+                if matched <= 0:
+                    continue
                 result['total'] += matched
-                result['lower'] += lower
-                result['upper'] += upper
+                result['lower'] += main_lower
+                result['upper'] += main_upper
+                result['side'] += side
                 name = cg.get('CarTypeName') or cg.get('CarType') or '?'
                 result['by_type'][name] = result['by_type'].get(name, 0) + matched
                 if price and (result['min_price'] is None or price < result['min_price']):

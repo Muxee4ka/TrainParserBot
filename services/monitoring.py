@@ -10,7 +10,7 @@ from datetime import datetime
 from database import DatabaseManager, Subscription
 from services.rzd_api import RZDAPIService
 from services.notification import NotificationService
-from services.filters import format_filter_summary
+from services.filters import format_filter_summary, matched_unit
 from config import config
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,7 @@ class MonitoringService:
                 subscription.destination_code,
                 subscription.departure_date
             )
-            keyboard = [[{"text": "🎫 Купить на РЖД", "url": purchase_url}]]
+            keyboard = [[{"text": "🎫 Купить на РЖД", "url": purchase_url, "style": "success"}]]
             await self.notification_service.send_message(
                 subscription.user_id, message, keyboard=keyboard
             )
@@ -163,8 +163,9 @@ class MonitoringService:
             m = self.rzd_api.match_seats(
                 train, car_types=car_types or None, berth=berth, max_price=max_price
             )
-            seats_line = f"   ✅ Доступно мест: {m['total']}"
-            if m['lower'] or m['upper']:
+            unit = matched_unit(berth)
+            seats_line = f"   ✅ Доступно ({unit}): {m['total']}"
+            if berth != 'cabin' and (m['lower'] or m['upper']):
                 seats_line += f" (низ {m['lower']} / верх {m['upper']})"
             message += seats_line + "\n"
 

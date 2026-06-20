@@ -106,17 +106,20 @@ class CommandsHandler(BaseHandler):
                     keyboard.append([
                         {
                             "text": f"🔄 Проверить #{subscription.id}",
-                            "callback_data": f"check_sub_{subscription.id}"
+                            "callback_data": f"check_sub_{subscription.id}",
+                            "style": "primary"
                         },
                         {
                             "text": f"❌ Отключить #{subscription.id}",
-                            "callback_data": f"disable_sub_{subscription.id}"
+                            "callback_data": f"disable_sub_{subscription.id}",
+                            "style": "danger"
                         }
                     ])
                 else:
                     keyboard.append([{
                         "text": f"✅ Включить #{subscription.id}",
-                        "callback_data": f"enable_sub_{subscription.id}"
+                        "callback_data": f"enable_sub_{subscription.id}",
+                        "style": "success"
                     }])
             
             if keyboard:

@@ -52,4 +52,4 @@ def test_format_availability_message_respects_price_filter():
     # Дешёвый (Плац, 2000 ₽) вагон проходит фильтр
     assert "2000" in message
     # Только подходящие места (5 мест Плац) учитываются в количестве, а не 4+5=9
-    assert "Доступно мест: 5" in message
+    assert "Доступно (мест): 5" in message
