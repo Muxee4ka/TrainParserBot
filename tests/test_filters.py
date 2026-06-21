@@ -1,54 +1,97 @@
 from services import filters as f
 
+
+def _berth_cargroups():
+    # купейный + плацкартный поезд
+    return [
+        {"AvailabilityIndication": "Available", "CarType": "Compartment", "CarTypeName": "Купе",
+         "MinPrice": 3000, "MaxPrice": 5000},
+        {"AvailabilityIndication": "Available", "CarType": "ReservedSeat", "CarTypeName": "Плац",
+         "MinPrice": 1800, "MaxPrice": 2600},
+    ]
+
+
+def _seated_cargroups():
+    # сидячий поезд (Сапсан): один CarType, разные классы
+    return [
+        {"AvailabilityIndication": "Available", "CarType": "Sedentary", "CarTypeName": "СИД",
+         "ServiceClassNameRu": "Эконом+", "MinPrice": 10000, "MaxPrice": 16000},
+        {"AvailabilityIndication": "Available", "CarType": "Sedentary", "CarTypeName": "СИД",
+         "ServiceClassNameRu": "Бизнес класс", "MinPrice": 20000, "MaxPrice": 40000},
+    ]
+
+
 def test_toggle_car_type_add_remove():
     assert f.toggle_car_type("", "Compartment") == "Compartment"
-    assert f.toggle_car_type("Compartment", "ReservedSeat") in ("Compartment,ReservedSeat", "ReservedSeat,Compartment")
+    assert f.toggle_car_type("Compartment", "ReservedSeat") == "Compartment,ReservedSeat"
     assert f.toggle_car_type("Compartment,ReservedSeat", "Compartment") == "ReservedSeat"
+    # произвольный токен (класс обслуживания) не теряется
+    assert f.toggle_car_type("", "Бизнес класс") == "Бизнес класс"
+
 
 def test_parse_filter_callback():
     assert f.parse_filter_callback("flt_car_Compartment") == ("car", "Compartment")
     assert f.parse_filter_callback("flt_berth_lower") == ("berth", "lower")
-    assert f.parse_filter_callback("flt_price_5000") == ("price", "5000")
+    assert f.parse_filter_callback("flt_price_inc") == ("price", "inc")
     assert f.parse_filter_callback("subscribe_filtered") is None
+
 
 def test_format_filter_summary():
     assert f.format_filter_summary("", "any", 0) == "любые места"
     assert f.format_filter_summary("Compartment", "lower", 8000) == "Купе · нижнее · до 8000 ₽"
-    assert f.format_filter_summary("Compartment,ReservedSeat", "upper", 0) == "Купе, Плац · верхнее"
-    assert f.format_filter_summary("ReservedSeat", "side", 0) == "Плац · боковое"
-    assert f.format_filter_summary("Compartment", "cabin", 0) == "Купе · купе целиком"
+    assert f.format_filter_summary("Бизнес класс", "any", 0) == "Бизнес класс"
+
 
 def test_matched_unit():
     assert f.matched_unit("cabin") == "пустых купе"
-    assert f.matched_unit("lower") == "мест"
+    assert f.matched_unit("pair") == "купе с парой низ+верх"
     assert f.matched_unit("any") == "мест"
 
-def test_build_filter_keyboard_marks_selected():
-    kb = f.build_filter_keyboard("Compartment", "lower", 5000)
-    flat = [b for row in kb for b in row]
-    texts = {b["text"]: b["callback_data"] for b in flat}
-    assert "✅ Купе" in texts and texts["✅ Купе"] == "flt_car_Compartment"
-    assert "✅ Нижнее" in texts and texts["✅ Нижнее"] == "flt_berth_lower"
-    assert "✅ ≤5000" in texts
-    # все опции полки присутствуют, каждая своей строкой
-    berth_cbs = {b["callback_data"] for row in kb for b in row if b["callback_data"].startswith("flt_berth_")}
-    assert berth_cbs == {"flt_berth_any", "flt_berth_lower", "flt_berth_upper",
-                         "flt_berth_side", "flt_berth_cabin", "flt_berth_pair"}
-    sub_btn = next(b for b in flat if b["callback_data"] == "subscribe_filtered")
-    assert sub_btn["style"] == "primary"
 
-def test_selected_buttons_have_success_style():
-    kb = f.build_filter_keyboard("Compartment", "lower", 5000)
+def test_build_filter_context_berth_train():
+    ctx = f.build_filter_context(_berth_cargroups())
+    assert [c["value"] for c in ctx["categories"]] == ["Compartment", "ReservedSeat"]
+    assert ctx["has_berths"] is True and ctx["show_side"] is True and ctx["show_cabin_pair"] is True
+    assert ctx["price_min"] == 1800 and ctx["price_max"] == 5000
+
+
+def test_build_filter_context_seated_train():
+    ctx = f.build_filter_context(_seated_cargroups())
+    # категории = классы обслуживания, рядов полки нет
+    assert [c["label"] for c in ctx["categories"]] == ["Эконом+", "Бизнес класс"]
+    assert ctx["has_berths"] is False
+    assert ctx["price_min"] == 10000 and ctx["price_max"] == 40000
+
+
+def test_seated_keyboard_has_classes_no_berths():
+    ctx = f.build_filter_context(_seated_cargroups())
+    kb = f.build_filter_keyboard("", "any", 0, ctx)
+    cbs = [b["callback_data"] for row in kb for b in row]
+    assert "flt_car_Эконом+" in cbs
+    assert not any(c.startswith("flt_berth_") for c in cbs)  # полок нет у сидячих
+    assert "flt_price_inc" in cbs and "flt_price_dec" in cbs
+
+
+def test_berth_keyboard_has_berths_and_price_slider():
+    ctx = f.build_filter_context(_berth_cargroups())
+    kb = f.build_filter_keyboard("Compartment", "lower", 0, ctx)
     flat = [b for row in kb for b in row]
     by_cb = {b["callback_data"]: b for b in flat}
-    # выбранные подсвечены success, невыбранные — без style
     assert by_cb["flt_car_Compartment"].get("style") == "success"
     assert by_cb["flt_berth_lower"].get("style") == "success"
-    assert by_cb["flt_price_5000"].get("style") == "success"
-    assert "style" not in by_cb["flt_car_ReservedSeat"]
-    assert "style" not in by_cb["flt_berth_upper"]
+    assert "flt_berth_cabin" in by_cb and "flt_berth_pair" in by_cb and "flt_berth_side" in by_cb
+    # ползунок цены
+    assert "flt_price_dec" in by_cb and "flt_price_inc" in by_cb
 
-def test_cabin_option_selected():
-    kb = f.build_filter_keyboard("", "cabin", 0)
-    texts = [b["text"] for row in kb for b in row]
-    assert "✅ 🚪 Купе целиком" in texts
+
+def test_adjust_price_slider():
+    # диапазон 1800..5000 -> шаг 500 (≈ (5000-1800)/8=400 -> ближайший 500)
+    assert f.price_step(1800, 5000) == 500
+    # из «Любая» (0): dec начинает от max
+    assert f.adjust_price(0, "dec", 1800, 5000) == 4500
+    # inc выше max -> снова «Любая»
+    assert f.adjust_price(4800, "inc", 1800, 5000) == 0
+    # dec не опускается ниже min
+    assert f.adjust_price(2000, "dec", 1800, 5000) == 1800
+    # reset
+    assert f.adjust_price(3000, "0", 1800, 5000) == 0

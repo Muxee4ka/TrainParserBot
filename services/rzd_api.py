@@ -240,7 +240,11 @@ class RZDAPIService:
             for cg in train.get('CarGroups', []):
                 if cg.get('AvailabilityIndication') != 'Available':
                     continue
-                if wanted is not None and cg.get('CarType') not in wanted:
+                # категория может задаваться кодом CarType (купе/плац) ИЛИ классом
+                # обслуживания (для сидячих: «Эконом+», «Бизнес» и т.п.)
+                if wanted is not None and not (
+                    cg.get('CarType') in wanted or cg.get('ServiceClassNameRu') in wanted
+                ):
                     continue
                 price = cg.get('MinPrice')
                 if max_price and price and price > max_price:
@@ -266,7 +270,11 @@ class RZDAPIService:
                 result['lower'] += main_lower
                 result['upper'] += main_upper
                 result['side'] += side
-                name = cg.get('CarTypeName') or cg.get('CarType') or '?'
+                # для сидячих показываем класс обслуживания (СИД у всех одинаков)
+                if cg.get('CarType') == 'Sedentary':
+                    name = cg.get('ServiceClassNameRu') or cg.get('CarTypeName') or 'СИД'
+                else:
+                    name = cg.get('CarTypeName') or cg.get('CarType') or '?'
                 result['by_type'][name] = result['by_type'].get(name, 0) + matched
                 if price and (result['min_price'] is None or price < result['min_price']):
                     result['min_price'] = price

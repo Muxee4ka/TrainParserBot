@@ -926,9 +926,10 @@ class SearchHandler(BaseHandler):
             submit_text, submit_cb = "💾 Сохранить фильтры", "save_filters"
         else:
             submit_text, submit_cb = "🔔 Подписаться", "subscribe_filtered"
+        context = flt.build_filter_context(cargroups)
         keyboard = flt.build_filter_keyboard(
             search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
-            submit_text=submit_text, submit_cb=submit_cb,
+            context, submit_text=submit_text, submit_cb=submit_cb,
         )
         if search_state.progress_message_id:
             await self.notification_service.edit_message(
@@ -955,7 +956,12 @@ class SearchHandler(BaseHandler):
             elif kind == 'berth':
                 search_state.filter_berth = value
             elif kind == 'price':
-                search_state.filter_max_price = int(value)
+                # ползунок ±: считаем потолок из диапазона цен выбранного поезда
+                cargroups, _, _ = self._load_train(search_state.selected_train_cargroups)
+                ctx = flt.build_filter_context(cargroups)
+                search_state.filter_max_price = flt.adjust_price(
+                    search_state.filter_max_price, value, ctx['price_min'], ctx['price_max']
+                )
             self.db_manager.save_search_state(search_state)
             await self._render_filter_panel(callback.message.chat.id, search_state)
             await callback.answer()
