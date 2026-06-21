@@ -74,12 +74,14 @@ class MonitoringService:
         """
         from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS
         if subscription.berth in SEATMAP_BERTHS:
+            car_types = [c for c in (subscription.car_types or '').split(',') if c]
             n = SeatMapService().count_for_berth(
                 subscription.berth,
                 subscription.origin_code, subscription.destination_code,
                 train.get('LocalDepartureDateTime'),
                 train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                 train.get('Provider', 'P1'),
+                car_types=car_types or None,
             )
             return n or 0
         car_types = [c for c in (subscription.car_types or '').split(',') if c]
@@ -192,6 +194,7 @@ class MonitoringService:
                     train.get('LocalDepartureDateTime'),
                     train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                     train.get('Provider', 'P1'),
+                    car_types=car_types or None,
                 ) or []
                 message += f"   ✅ Доступно ({unit}): {len(detail)}\n"
                 if detail:

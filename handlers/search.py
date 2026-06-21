@@ -796,6 +796,7 @@ class SearchHandler(BaseHandler):
                         train.get('LocalDepartureDateTime'),
                         train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                         train.get('Provider', 'P1'),
+                        car_types or None,
                     )
                     if detail:
                         line += f"   ✅ {unit}: {len(detail)}\n   🚪 {format_seatmap_detail(berth, detail)}"
@@ -910,6 +911,7 @@ class SearchHandler(BaseHandler):
                 SeatMapService().count_for_berth, search_state.filter_berth,
                 search_state.origin_code, search_state.destination_code, dep,
                 search_state.selected_train_number, provider,
+                car_types or None,
             )
             matched = {'total': n if n is not None else 0}
         else:

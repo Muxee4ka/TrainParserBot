@@ -45,15 +45,28 @@ def _berth_kind(car: dict) -> str:
     return "other"
 
 
-def parse_compartments(payload: dict) -> dict:
+def _car_allowed(car: dict, car_types) -> bool:
+    """Подходит ли вагон под выбранные категории (CarType или класс обслуживания)."""
+    if not car_types:
+        return True
+    return car.get("CarType") in car_types or car.get("ServiceClassNameRu") in car_types
+
+
+def parse_compartments(payload: dict, car_types=None,
+                       include_types=("Compartment", "ReservedSeat")) -> dict:
     """car_number -> compartment_number -> {'lower': set, 'upper': set, 'all': set}.
 
-    Объединяет строки одного вагона; классифицирует места по типу полки.
-    Только купейные вагоны (CarType == 'Compartment')."""
+    Объединяет строки одного вагона и классифицирует места по типу полки.
+    include_types ограничивает рассматриваемые типы вагонов; car_types — выбранные
+    пользователем категории (CarType-код или класс обслуживания) — чтобы не считать
+    места в вагонах не из фильтра (напр. купе при фильтре «Плац»)."""
+    wanted = set(car_types) if car_types else None
     cars = defaultdict(lambda: defaultdict(lambda: {"lower": set(), "upper": set(), "all": set()}))
     try:
         for car in payload.get("Cars") or []:
-            if car.get("CarType") != "Compartment":
+            if car.get("CarType") not in include_types:
+                continue
+            if not _car_allowed(car, wanted):
                 continue
             number = car.get("CarNumber")
             kind = _berth_kind(car)
@@ -79,10 +92,12 @@ def _sort_key(d):
     return (_int(d["car"]), _int(d["compartment"]))
 
 
-def empty_compartments_detail(payload: dict) -> list:
-    """Полностью свободные купе: [{'car','compartment','places':[...]}], отсортировано."""
+def empty_compartments_detail(payload: dict, car_types=None) -> list:
+    """Полностью свободные купе: [{'car','compartment','places':[...]}], отсортировано.
+    Только купейные вагоны (целиком пустое купе — понятие купе)."""
     result = []
-    for number, comps in parse_compartments(payload).items():
+    comps_by_car = parse_compartments(payload, car_types=car_types, include_types=("Compartment",))
+    for number, comps in comps_by_car.items():
         for comp, cell in comps.items():
             if len(cell["all"]) >= COMPARTMENT_SIZE:
                 result.append({"car": number, "compartment": comp, "places": sorted(cell["all"])})
@@ -90,11 +105,12 @@ def empty_compartments_detail(payload: dict) -> list:
     return result
 
 
-def pair_compartments_detail(payload: dict) -> list:
-    """Купе/блоки, где свободны и нижнее, и верхнее место (пара друг над другом):
+def pair_compartments_detail(payload: dict, car_types=None) -> list:
+    """Купе/блоки (купе и плац), где свободны и нижнее, и верхнее место:
     [{'car','compartment','lower':[...],'upper':[...]}], отсортировано."""
     result = []
-    for number, comps in parse_compartments(payload).items():
+    comps_by_car = parse_compartments(payload, car_types=car_types)
+    for number, comps in comps_by_car.items():
         for comp, cell in comps.items():
             if cell["lower"] and cell["upper"]:
                 result.append({
@@ -105,11 +121,11 @@ def pair_compartments_detail(payload: dict) -> list:
     return result
 
 
-def detail_for_berth(payload: dict, berth: str) -> list:
-    """Детали под нужный фильтр полки ('cabin' | 'pair')."""
+def detail_for_berth(payload: dict, berth: str, car_types=None) -> list:
+    """Детали под нужный фильтр полки ('cabin' | 'pair') с учётом категорий."""
     if berth == "pair":
-        return pair_compartments_detail(payload)
-    return empty_compartments_detail(payload)
+        return pair_compartments_detail(payload, car_types=car_types)
+    return empty_compartments_detail(payload, car_types=car_types)
 
 
 def count_empty_compartments(payload: dict) -> int:
@@ -176,20 +192,23 @@ class SeatMapService:
         return resp.json()
 
     def detail_for_berth(self, berth: str, origin_code: str, destination_code: str,
-                         departure_datetime: str, train_number: str, provider: str = "P1"):
-        """Детали под фильтр полки ('cabin'|'pair') или None при сетевой ошибке."""
+                         departure_datetime: str, train_number: str, provider: str = "P1",
+                         car_types=None):
+        """Детали под фильтр полки ('cabin'|'pair') с учётом категорий, или None при ошибке."""
         try:
             payload = self._fetch(origin_code, destination_code, departure_datetime, train_number, provider)
-            return detail_for_berth(payload, berth)
+            return detail_for_berth(payload, berth, car_types=car_types)
         except Exception as e:
             logger.error(f"Схема вагонов недоступна ({train_number}): {e}")
             return None
 
     def count_for_berth(self, berth: str, origin_code: str, destination_code: str,
-                        departure_datetime: str, train_number: str, provider: str = "P1"):
+                        departure_datetime: str, train_number: str, provider: str = "P1",
+                        car_types=None):
         """Число подходящих купе под фильтр полки или None при сетевой ошибке."""
         detail = self.detail_for_berth(
-            berth, origin_code, destination_code, departure_datetime, train_number, provider
+            berth, origin_code, destination_code, departure_datetime, train_number, provider,
+            car_types=car_types,
         )
         return None if detail is None else len(detail)
 
