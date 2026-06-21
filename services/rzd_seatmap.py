@@ -31,12 +31,17 @@ SEATMAP_BERTHS = ('cabin', 'pair')
 
 
 def _berth_kind(car: dict) -> str:
-    """Тип полки строки вагона: 'lower' | 'upper' | 'other' по CarPlaceNameRu/Type."""
+    """Тип полки строки вагона по CarPlaceNameRu/Type.
+
+    Боковые места в плацкарте (37–54) отделяем от основных: для «низ+верх в одном
+    купе» учитываются только основные полки купе/блока, а не боковые в проходе.
+    Возвращает 'lower' | 'upper' | 'side_lower' | 'side_upper' | 'other'."""
     name = (car.get("CarPlaceNameRu") or "").lower()
+    side = "боков" in name
     if "ниж" in name:
-        return "lower"
+        return "side_lower" if side else "lower"
     if "верх" in name:
-        return "upper"
+        return "side_upper" if side else "upper"
     t = car.get("CarPlaceType") or ""
     if t == "Lower":
         return "lower"
@@ -52,14 +57,14 @@ def _car_allowed(car: dict, car_types) -> bool:
     return car.get("CarType") in car_types or car.get("ServiceClassNameRu") in car_types
 
 
-def parse_compartments(payload: dict, car_types=None,
+def parse_compartments(payload: dict, car_types=None, max_price: int = 0,
                        include_types=("Compartment", "ReservedSeat")) -> dict:
     """car_number -> compartment_number -> {'lower': set, 'upper': set, 'all': set}.
 
-    Объединяет строки одного вагона и классифицирует места по типу полки.
-    include_types ограничивает рассматриваемые типы вагонов; car_types — выбранные
-    пользователем категории (CarType-код или класс обслуживания) — чтобы не считать
-    места в вагонах не из фильтра (напр. купе при фильтре «Плац»)."""
+    Объединяет строки одного вагона и классифицирует места по типу полки. Боковые
+    места НЕ попадают в lower/upper (они не образуют купе «низ+верх»). include_types
+    ограничивает типы вагонов; car_types — выбранные категории (CarType/класс);
+    max_price (>0) отсекает вагоны дороже лимита (по MinPrice вагона)."""
     wanted = set(car_types) if car_types else None
     cars = defaultdict(lambda: defaultdict(lambda: {"lower": set(), "upper": set(), "all": set()}))
     try:
@@ -67,6 +72,8 @@ def parse_compartments(payload: dict, car_types=None,
             if car.get("CarType") not in include_types:
                 continue
             if not _car_allowed(car, wanted):
+                continue
+            if max_price and (car.get("MinPrice") or 0) > max_price:
                 continue
             number = car.get("CarNumber")
             kind = _berth_kind(car)
@@ -79,6 +86,7 @@ def parse_compartments(payload: dict, car_types=None,
                     p = int(p)
                     cell = cars[number][comp]
                     cell["all"].add(p)
+                    # боковые (side_*) в пару «в одном купе» не идут
                     if kind in ("lower", "upper"):
                         cell[kind].add(p)
     except Exception as e:
@@ -92,11 +100,12 @@ def _sort_key(d):
     return (_int(d["car"]), _int(d["compartment"]))
 
 
-def empty_compartments_detail(payload: dict, car_types=None) -> list:
+def empty_compartments_detail(payload: dict, car_types=None, max_price: int = 0) -> list:
     """Полностью свободные купе: [{'car','compartment','places':[...]}], отсортировано.
     Только купейные вагоны (целиком пустое купе — понятие купе)."""
     result = []
-    comps_by_car = parse_compartments(payload, car_types=car_types, include_types=("Compartment",))
+    comps_by_car = parse_compartments(payload, car_types=car_types, max_price=max_price,
+                                      include_types=("Compartment",))
     for number, comps in comps_by_car.items():
         for comp, cell in comps.items():
             if len(cell["all"]) >= COMPARTMENT_SIZE:
@@ -105,11 +114,11 @@ def empty_compartments_detail(payload: dict, car_types=None) -> list:
     return result
 
 
-def pair_compartments_detail(payload: dict, car_types=None) -> list:
-    """Купе/блоки (купе и плац), где свободны и нижнее, и верхнее место:
+def pair_compartments_detail(payload: dict, car_types=None, max_price: int = 0) -> list:
+    """Купе/блоки (купе и плац), где свободны и нижнее, и верхнее ОСНОВНЫЕ места:
     [{'car','compartment','lower':[...],'upper':[...]}], отсортировано."""
     result = []
-    comps_by_car = parse_compartments(payload, car_types=car_types)
+    comps_by_car = parse_compartments(payload, car_types=car_types, max_price=max_price)
     for number, comps in comps_by_car.items():
         for comp, cell in comps.items():
             if cell["lower"] and cell["upper"]:
@@ -121,11 +130,11 @@ def pair_compartments_detail(payload: dict, car_types=None) -> list:
     return result
 
 
-def detail_for_berth(payload: dict, berth: str, car_types=None) -> list:
-    """Детали под нужный фильтр полки ('cabin' | 'pair') с учётом категорий."""
+def detail_for_berth(payload: dict, berth: str, car_types=None, max_price: int = 0) -> list:
+    """Детали под нужный фильтр полки ('cabin' | 'pair') с учётом категорий и цены."""
     if berth == "pair":
-        return pair_compartments_detail(payload, car_types=car_types)
-    return empty_compartments_detail(payload, car_types=car_types)
+        return pair_compartments_detail(payload, car_types=car_types, max_price=max_price)
+    return empty_compartments_detail(payload, car_types=car_types, max_price=max_price)
 
 
 def count_empty_compartments(payload: dict) -> int:
@@ -193,22 +202,22 @@ class SeatMapService:
 
     def detail_for_berth(self, berth: str, origin_code: str, destination_code: str,
                          departure_datetime: str, train_number: str, provider: str = "P1",
-                         car_types=None):
-        """Детали под фильтр полки ('cabin'|'pair') с учётом категорий, или None при ошибке."""
+                         car_types=None, max_price: int = 0):
+        """Детали под фильтр полки ('cabin'|'pair') с учётом категорий/цены, или None при ошибке."""
         try:
             payload = self._fetch(origin_code, destination_code, departure_datetime, train_number, provider)
-            return detail_for_berth(payload, berth, car_types=car_types)
+            return detail_for_berth(payload, berth, car_types=car_types, max_price=max_price)
         except Exception as e:
             logger.error(f"Схема вагонов недоступна ({train_number}): {e}")
             return None
 
     def count_for_berth(self, berth: str, origin_code: str, destination_code: str,
                         departure_datetime: str, train_number: str, provider: str = "P1",
-                        car_types=None):
+                        car_types=None, max_price: int = 0):
         """Число подходящих купе под фильтр полки или None при сетевой ошибке."""
         detail = self.detail_for_berth(
             berth, origin_code, destination_code, departure_datetime, train_number, provider,
-            car_types=car_types,
+            car_types=car_types, max_price=max_price,
         )
         return None if detail is None else len(detail)
 

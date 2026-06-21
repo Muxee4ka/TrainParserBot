@@ -192,6 +192,8 @@ class SearchHandler(BaseHandler):
                 await self.search_stations(message, text, search_state, step='destination')
             elif search_state.search_step == 'date':
                 await self.handle_date_input(message, search_state)
+            elif search_state.search_step == 'await_price':
+                await self.handle_price_input(message, search_state)
             else:
                 sent = await message.answer('Используйте кнопки для выбора поезда или подписки.')
                 search_state.messages_to_delete.append(sent.message_id)
@@ -796,7 +798,7 @@ class SearchHandler(BaseHandler):
                         train.get('LocalDepartureDateTime'),
                         train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                         train.get('Provider', 'P1'),
-                        car_types or None,
+                        car_types or None, max_price,
                     )
                     if detail:
                         line += f"   ✅ {unit}: {len(detail)}\n   🚪 {format_seatmap_detail(berth, detail)}"
@@ -911,7 +913,7 @@ class SearchHandler(BaseHandler):
                 SeatMapService().count_for_berth, search_state.filter_berth,
                 search_state.origin_code, search_state.destination_code, dep,
                 search_state.selected_train_number, provider,
-                car_types or None,
+                car_types or None, search_state.filter_max_price,
             )
             matched = {'total': n if n is not None else 0}
         else:
@@ -958,18 +960,42 @@ class SearchHandler(BaseHandler):
             elif kind == 'berth':
                 search_state.filter_berth = value
             elif kind == 'price':
-                # ползунок ±: считаем потолок из диапазона цен выбранного поезда
-                cargroups, _, _ = self._load_train(search_state.selected_train_cargroups)
-                ctx = flt.build_filter_context(cargroups)
-                search_state.filter_max_price = flt.adjust_price(
-                    search_state.filter_max_price, value, ctx['price_min'], ctx['price_max']
-                )
+                if value == 'set':
+                    # запрашиваем сумму вводом сообщением
+                    search_state.search_step = 'await_price'
+                    self.db_manager.save_search_state(search_state)
+                    sent_id = await self.notification_service.send_message(
+                        user_id,
+                        "💰 Введите максимальную цену в рублях (например 8000).\nОтправьте 0 — без лимита.",
+                    )
+                    if sent_id:
+                        search_state.messages_to_delete.append(sent_id)
+                        self.db_manager.save_search_state(search_state)
+                    await callback.answer("Введите цену сообщением")
+                    return
+                # value == '0' — сброс лимита
+                search_state.filter_max_price = 0
             self.db_manager.save_search_state(search_state)
             await self._render_filter_panel(callback.message.chat.id, search_state)
             await callback.answer()
         except Exception as e:
             logger.error(f"Ошибка тоггла фильтра: {e}")
             await callback.answer()
+
+    async def handle_price_input(self, message: Message, search_state: SearchState):
+        """Обработка ручного ввода максимальной цены (после кнопки «Задать цену»)."""
+        try:
+            digits = ''.join(ch for ch in (message.text or '') if ch.isdigit())
+            search_state.filter_max_price = int(digits) if digits else 0
+            # возвращаемся к панели фильтров
+            search_state.search_step = 'done'
+            self.db_manager.save_search_state(search_state)
+            await self._render_filter_panel(message.chat.id, search_state)
+            await self._delete_user_messages(message.chat.id, search_state)
+        except Exception as e:
+            logger.error(f"Ошибка ввода цены: {e}")
+            search_state.search_step = 'done'
+            self.db_manager.save_search_state(search_state)
 
     async def handle_edit_filters(self, callback: CallbackQuery):
         """Открывает панель фильтров для существующей подписки (режим правки)."""

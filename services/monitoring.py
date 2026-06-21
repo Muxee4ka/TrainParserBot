@@ -81,7 +81,7 @@ class MonitoringService:
                 train.get('LocalDepartureDateTime'),
                 train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                 train.get('Provider', 'P1'),
-                car_types=car_types or None,
+                car_types=car_types or None, max_price=subscription.max_price,
             )
             return n or 0
         car_types = [c for c in (subscription.car_types or '').split(',') if c]
@@ -194,7 +194,7 @@ class MonitoringService:
                     train.get('LocalDepartureDateTime'),
                     train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                     train.get('Provider', 'P1'),
-                    car_types=car_types or None,
+                    car_types=car_types or None, max_price=max_price,
                 ) or []
                 message += f"   ✅ Доступно ({unit}): {len(detail)}\n"
                 if detail:

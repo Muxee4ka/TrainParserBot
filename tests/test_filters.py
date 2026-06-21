@@ -32,7 +32,7 @@ def test_toggle_car_type_add_remove():
 def test_parse_filter_callback():
     assert f.parse_filter_callback("flt_car_Compartment") == ("car", "Compartment")
     assert f.parse_filter_callback("flt_berth_lower") == ("berth", "lower")
-    assert f.parse_filter_callback("flt_price_inc") == ("price", "inc")
+    assert f.parse_filter_callback("flt_price_set") == ("price", "set")
     assert f.parse_filter_callback("subscribe_filtered") is None
 
 
@@ -69,10 +69,10 @@ def test_seated_keyboard_has_classes_no_berths():
     cbs = [b["callback_data"] for row in kb for b in row]
     assert "flt_car_Эконом+" in cbs
     assert not any(c.startswith("flt_berth_") for c in cbs)  # полок нет у сидячих
-    assert "flt_price_inc" in cbs and "flt_price_dec" in cbs
+    assert "flt_price_set" in cbs  # ввод цены вручную
 
 
-def test_berth_keyboard_has_berths_and_price_slider():
+def test_berth_keyboard_has_berths_and_price_set():
     ctx = f.build_filter_context(_berth_cargroups())
     kb = f.build_filter_keyboard("Compartment", "lower", 0, ctx)
     flat = [b for row in kb for b in row]
@@ -80,18 +80,13 @@ def test_berth_keyboard_has_berths_and_price_slider():
     assert by_cb["flt_car_Compartment"].get("style") == "success"
     assert by_cb["flt_berth_lower"].get("style") == "success"
     assert "flt_berth_cabin" in by_cb and "flt_berth_pair" in by_cb and "flt_berth_side" in by_cb
-    # ползунок цены
-    assert "flt_price_dec" in by_cb and "flt_price_inc" in by_cb
+    # цена — кнопка ручного ввода; «Сброс» появляется только при заданном лимите
+    assert "flt_price_set" in by_cb
+    assert "flt_price_0" not in by_cb
 
 
-def test_adjust_price_slider():
-    # диапазон 1800..5000 -> шаг 500 (≈ (5000-1800)/8=400 -> ближайший 500)
-    assert f.price_step(1800, 5000) == 500
-    # из «Любая» (0): dec начинает от max
-    assert f.adjust_price(0, "dec", 1800, 5000) == 4500
-    # inc выше max -> снова «Любая»
-    assert f.adjust_price(4800, "inc", 1800, 5000) == 0
-    # dec не опускается ниже min
-    assert f.adjust_price(2000, "dec", 1800, 5000) == 1800
-    # reset
-    assert f.adjust_price(3000, "0", 1800, 5000) == 0
+def test_price_reset_button_appears_when_capped():
+    ctx = f.build_filter_context(_berth_cargroups())
+    kb = f.build_filter_keyboard("", "any", 3000, ctx)
+    cbs = [b["callback_data"] for row in kb for b in row]
+    assert "flt_price_set" in cbs and "flt_price_0" in cbs
