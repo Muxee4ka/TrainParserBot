@@ -24,6 +24,8 @@ class Subscription:
     interval_minutes: int
     is_active: bool
     created_at: datetime
+    berth: str = 'any'
+    max_price: int = 0
 
 
 @dataclass
@@ -45,5 +47,11 @@ class SearchState:
     selected_train_info: Optional[str] = None  # краткая инфа о поезде
     search_step: str = 'origin'  # этап поиска: origin, destination, date, train, done
     messages_to_delete: List[int] = field(default_factory=list)  # id сообщений для удаления
+    filter_car_types: str = ''
+    filter_berth: str = 'any'
+    filter_max_price: int = 0
+    selected_train_cargroups: str = ''
+    editing_subscription_id: Optional[int] = None  # id подписки в режиме редактирования фильтров
+    station_options: str = ''  # JSON-карта {код станции: имя} для надёжного восстановления имени
 
 

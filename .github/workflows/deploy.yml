@@ -3,45 +3,36 @@ name: Deploy
 on:
   push:
     branches: [ master, develop ]
+  workflow_dispatch:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # self-hosted runner крутится на целевом устройстве (Orange Pi в LAN),
+    # поэтому деплой идёт локально — без SSH и без облачного раннера.
+    runs-on: [self-hosted, orangepi]
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Deploy on Orange Pi
+        env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          DEPLOY_DIR: ${{ secrets.DEPLOY_PATH }}
+          BRANCH: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -e
+          cd "$DEPLOY_DIR"
+          git config --global --add safe.directory "$DEPLOY_DIR" || true
+          git fetch --all
+          git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
+          git reset --hard "origin/$BRANCH"
 
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_KEY }}
-          port: ${{ secrets.SSH_PORT || 22 }}
-          script: |
-            set -e
-            DEPLOY_DIR="${{ secrets.DEPLOY_PATH }}"
-            REPO="https://github.com/${{ github.repository }}.git"
-            BRANCH="${{ github.ref_name }}"
+          # .env генерируется из секрета BOT_TOKEN (права 600 благодаря umask)
+          umask 077
+          printf 'BOT_TOKEN=%s\n' "$BOT_TOKEN" > .env
 
-            # Подготовка директории
-            cd "$DEPLOY_DIR"
+          [ -d .venv ] || python3 -m venv .venv
+          .venv/bin/pip install -q --upgrade pip
+          .venv/bin/pip install -q -r requirements.txt
 
-            git config --global --add safe.directory "$(pwd)" || true
-            if [ ! -d .git ]; then
-              git clone "$REPO" .
-            fi
-            git fetch --all
-            git checkout "$BRANCH" || git checkout -b "$BRANCH" "origin/$BRANCH"
-            git reset --hard "origin/$BRANCH"
-
-            if [ ! -d .venv ]; then
-              python3 -m venv .venv
-            fi
-            . .venv/bin/activate
-            python -m pip install --upgrade pip
-            pip install -r requirements.txt
-
-            # Перезапуск сервиса (без запроса пароля и TTY)
-            sudo -n /usr/bin/systemctl restart trainparserbot
-            sudo -n /usr/bin/systemctl status trainparserbot --no-pager
+          # Перезапуск сервиса (sudo только на restart; статус читается без root)
+          sudo -n systemctl restart trainparserbot
+          systemctl --no-pager --full status trainparserbot || true

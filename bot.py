@@ -78,6 +78,7 @@ class TrainBot:
         """Остановка бота"""
         try:
             logger.info("Остановка бота...")
+            await self.monitoring_service.notification_service.close()
             await self.bot.session.close()
         except Exception as e:
             logger.error(f"Ошибка остановки бота: {e}")

@@ -8,6 +8,7 @@ from aiogram.filters import Command
 
 from handlers.base import BaseHandler
 from services.notification import NotificationService
+from services.filters import format_filter_summary
 from database import DatabaseManager
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,8 @@ class CommandsHandler(BaseHandler):
         self.router.message.register(self.start_command, Command("start"))
         self.router.message.register(self.help_command, Command("help"))
         self.router.message.register(self.subscriptions_command, Command("subscriptions"))
-    
+        self.router.message.register(self.cancel_command, Command("cancel"))
+
     async def start_command(self, message: Message):
         """Обработчик команды /start"""
         welcome_text = """
@@ -34,13 +36,22 @@ class CommandsHandler(BaseHandler):
 
 Доступные команды:
 /search - Начать поиск поездов
-/subscribe - Подписаться на отслеживание
 /subscriptions - Мои подписки
+/cancel - Сбросить текущий поиск
 /help - Помощь
 
 💡 Для поиска просто напишите название станции отправления!
         """
         await message.answer(welcome_text.strip())
+
+    async def cancel_command(self, message: Message):
+        """Обработчик команды /cancel — сброс зависшего состояния поиска"""
+        try:
+            self.db_manager.clear_search_state(message.from_user.id)
+            await message.answer("🚫 Текущий поиск сброшен. Напишите /search, чтобы начать заново.")
+        except Exception as e:
+            logger.error(f"Ошибка сброса состояния поиска: {e}")
+            await message.answer("❌ Не удалось сбросить поиск.")
     
     async def help_command(self, message: Message):
         """Обработчик команды /help"""
@@ -60,7 +71,10 @@ class CommandsHandler(BaseHandler):
 
 📋 Управление подписками:
    • /subscriptions - просмотр всех подписок
+   • Нажмите "Проверить" для мгновенной проверки наличия мест
    • Нажмите "Отключить" для отключения подписки
+
+🚫 /cancel - сбросить текущий поиск, если что-то зависло
 
 💡 Советы:
 • Используйте точные названия станций (Москва, Санкт-Петербург)
@@ -83,23 +97,48 @@ class CommandsHandler(BaseHandler):
             keyboard = []
             
             for subscription in subscriptions:
-                status = "✅ Активна" if subscription.is_active else "❌ Отключена"
+                status = "🟢 Активна" if subscription.is_active else "🔴 Отключена"
+                filter_summary = format_filter_summary(
+                    subscription.car_types, subscription.berth, subscription.max_price
+                )
                 message_text += f"🔔 Подписка #{subscription.id}\n"
                 message_text += f"   Маршрут: {subscription.origin_name} -> {subscription.destination_name}\n"
                 message_text += f"   Дата: {subscription.departure_date[:10]}\n"
+                message_text += f"   Фильтр: {filter_summary}\n"
                 message_text += f"   Статус: {status}\n\n"
                 
                 if subscription.is_active:
-                    keyboard.append([{
-                        "text": f"❌ Отключить #{subscription.id}",
-                        "callback_data": f"disable_sub_{subscription.id}"
-                    }])
+                    keyboard.append([
+                        {
+                            "text": f"🔄 Проверить #{subscription.id}",
+                            "callback_data": f"check_sub_{subscription.id}",
+                            "style": "primary"
+                        },
+                        {
+                            "text": f"❌ Отключить #{subscription.id}",
+                            "callback_data": f"disable_sub_{subscription.id}",
+                            "style": "danger"
+                        }
+                    ])
                 else:
                     keyboard.append([{
                         "text": f"✅ Включить #{subscription.id}",
-                        "callback_data": f"enable_sub_{subscription.id}"
+                        "callback_data": f"enable_sub_{subscription.id}",
+                        "style": "success"
                     }])
-            
+                # Правка фильтров и удаление — доступны и для активных, и для отключённых
+                keyboard.append([
+                    {
+                        "text": f"✏️ Фильтры #{subscription.id}",
+                        "callback_data": f"editflt_{subscription.id}"
+                    },
+                    {
+                        "text": f"🗑 Удалить #{subscription.id}",
+                        "callback_data": f"delsub_{subscription.id}",
+                        "style": "danger"
+                    }
+                ])
+
             if keyboard:
                 await self.notification_service.send_message_with_keyboard(
                     user_id, message_text, keyboard
