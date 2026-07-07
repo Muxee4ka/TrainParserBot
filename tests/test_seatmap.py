@@ -193,3 +193,26 @@ def test_format_seatmap_detail_together():
     from services.rzd_seatmap import format_seatmap_detail
     detail = together_seats_detail(_payload_sedentary(), 3)
     assert format_seatmap_detail("together", detail) == format_seat_groups(detail)
+
+
+def test_seatmap_service_together_min_count(monkeypatch):
+    svc = SeatMapService()
+    monkeypatch.setattr(svc, "_fetch", lambda *a, **k: _payload_sedentary())
+    n = svc.count_for_berth("together", "2064150", "2064130", "2026-07-07T16:10:00", "812С",
+                            min_count=3)
+    assert n == 2  # блоки 3 и 9 (>= 3 места)
+
+
+def test_seatmap_service_together_default_min_count(monkeypatch):
+    svc = SeatMapService()
+    monkeypatch.setattr(svc, "_fetch", lambda *a, **k: _payload_sedentary())
+    n = svc.count_for_berth("together", "2064150", "2064130", "2026-07-07T16:10:00", "812С")
+    assert n == 3  # min_count по умолчанию 1 -> все три блока
+
+
+def test_seatmap_service_cabin_unaffected_by_min_count(monkeypatch):
+    svc = SeatMapService()
+    monkeypatch.setattr(svc, "_fetch", lambda *a, **k: _payload_typed())
+    # min_count не используется для 'cabin' — поведение не меняется
+    n = svc.count_for_berth("cabin", "A", "B", "2026-07-01T00:00:00", "001A", min_count=5)
+    assert n == svc.count_for_berth("cabin", "A", "B", "2026-07-01T00:00:00", "001A")

@@ -236,22 +236,24 @@ class SeatMapService:
 
     def detail_for_berth(self, berth: str, origin_code: str, destination_code: str,
                          departure_datetime: str, train_number: str, provider: str = "P1",
-                         car_types=None, max_price: int = 0):
-        """Детали под фильтр полки ('cabin'|'pair') с учётом категорий/цены, или None при ошибке."""
+                         car_types=None, max_price: int = 0, min_count: int = 1):
+        """Детали под фильтр полки ('cabin'|'pair'|'together') с учётом категорий/цены,
+        или None при ошибке. min_count используется только веткой 'together'."""
         try:
             payload = self._fetch(origin_code, destination_code, departure_datetime, train_number, provider)
-            return detail_for_berth(payload, berth, car_types=car_types, max_price=max_price)
+            return detail_for_berth(payload, berth, car_types=car_types, max_price=max_price,
+                                    min_count=min_count)
         except Exception as e:
             logger.error(f"Схема вагонов недоступна ({train_number}): {e}")
             return None
 
     def count_for_berth(self, berth: str, origin_code: str, destination_code: str,
                         departure_datetime: str, train_number: str, provider: str = "P1",
-                        car_types=None, max_price: int = 0):
-        """Число подходящих купе под фильтр полки или None при сетевой ошибке."""
+                        car_types=None, max_price: int = 0, min_count: int = 1):
+        """Число подходящих купе/групп под фильтр полки или None при сетевой ошибке."""
         detail = self.detail_for_berth(
             berth, origin_code, destination_code, departure_datetime, train_number, provider,
-            car_types=car_types, max_price=max_price,
+            car_types=car_types, max_price=max_price, min_count=min_count,
         )
         return None if detail is None else len(detail)
 
