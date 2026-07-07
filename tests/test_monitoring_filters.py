@@ -53,3 +53,20 @@ def test_format_availability_message_respects_price_filter():
     assert "2000" in message
     # Только подходящие места (5 мест Плац) учитываются в количестве, а не 4+5=9
     assert "Доступно (мест): 5" in message
+
+
+def test_count_matched_together_passes_min_seats(monkeypatch):
+    from services import rzd_seatmap
+    captured = {}
+
+    def fake_count_for_berth(self, berth, *args, **kwargs):
+        captured['min_count'] = kwargs.get('min_count')
+        return 2
+
+    monkeypatch.setattr(rzd_seatmap.SeatMapService, "count_for_berth", fake_count_for_berth)
+    api = RZDAPIService()
+    sub = _sub(berth="together", min_seats=3, car_types="Sedentary")
+    train = {"TrainNumber": "812С", "CarGroups": [], "LocalDepartureDateTime": "2026-07-07T16:10:00"}
+    n = MonitoringService.count_matched(api, sub, train)
+    assert n == 2
+    assert captured['min_count'] == 3

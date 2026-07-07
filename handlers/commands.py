@@ -99,7 +99,8 @@ class CommandsHandler(BaseHandler):
             for subscription in subscriptions:
                 status = "🟢 Активна" if subscription.is_active else "🔴 Отключена"
                 filter_summary = format_filter_summary(
-                    subscription.car_types, subscription.berth, subscription.max_price
+                    subscription.car_types, subscription.berth, subscription.max_price,
+                    subscription.min_seats,
                 )
                 message_text += f"🔔 Подписка #{subscription.id}\n"
                 message_text += f"   Маршрут: {subscription.origin_name} -> {subscription.destination_name}\n"

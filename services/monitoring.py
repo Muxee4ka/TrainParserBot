@@ -69,7 +69,7 @@ class MonitoringService:
     def count_matched(rzd_api, subscription, train) -> int:
         """Сколько мест поезда подходит под фильтр подписки.
 
-        Для berth 'cabin'/'pair' считает купе через схему вагонов (CarPricing) —
+        Для berth 'cabin'/'pair'/'together' считает через схему вагонов (CarPricing) —
         агрегатных данных недостаточно. Иначе — match_seats.
         """
         from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS
@@ -82,6 +82,7 @@ class MonitoringService:
                 train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                 train.get('Provider', 'P1'),
                 car_types=car_types or None, max_price=subscription.max_price,
+                min_count=subscription.min_seats,
             )
             return n or 0
         car_types = [c for c in (subscription.car_types or '').split(',') if c]
@@ -174,7 +175,7 @@ class MonitoringService:
         berth = subscription.berth
         max_price = subscription.max_price
 
-        summary = format_filter_summary(subscription.car_types, berth, max_price)
+        summary = format_filter_summary(subscription.car_types, berth, max_price, subscription.min_seats)
         message += f"Фильтр: {summary}\n\n"
 
         for i, train in enumerate(trains[:5], 1):  # Показываем первые 5 поездов
@@ -195,6 +196,7 @@ class MonitoringService:
                     train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                     train.get('Provider', 'P1'),
                     car_types=car_types or None, max_price=max_price,
+                    min_count=subscription.min_seats,
                 ) or []
                 message += f"   ✅ Доступно ({unit}): {len(detail)}\n"
                 if detail:
