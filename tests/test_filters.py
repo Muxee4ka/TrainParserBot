@@ -63,12 +63,14 @@ def test_build_filter_context_seated_train():
     assert ctx["price_min"] == 10000 and ctx["price_max"] == 40000
 
 
-def test_seated_keyboard_has_classes_no_berths():
+def test_seated_keyboard_has_classes_and_together_no_lower_upper():
     ctx = f.build_filter_context(_seated_cargroups())
-    kb = f.build_filter_keyboard("", "any", 0, ctx)
+    kb = f.build_filter_keyboard("", "any", 0, ctx, min_seats=3)
     cbs = [b["callback_data"] for row in kb for b in row]
     assert "flt_car_Эконом+" in cbs
-    assert not any(c.startswith("flt_berth_") for c in cbs)  # полок нет у сидячих
+    assert "flt_berth_lower" not in cbs and "flt_berth_upper" not in cbs  # полок нет у сидячих
+    assert "flt_berth_together" in cbs
+    assert "flt_seats_set" in cbs
     assert "flt_price_set" in cbs  # ввод цены вручную
 
 
@@ -90,3 +92,38 @@ def test_price_reset_button_appears_when_capped():
     kb = f.build_filter_keyboard("", "any", 3000, ctx)
     cbs = [b["callback_data"] for row in kb for b in row]
     assert "flt_price_set" in cbs and "flt_price_0" in cbs
+
+
+def test_build_filter_context_seated_train_shows_seat_group():
+    ctx = f.build_filter_context(_seated_cargroups())
+    assert ctx["show_seat_group"] is True
+
+
+def test_build_filter_context_berth_train_no_seat_group():
+    ctx = f.build_filter_context(_berth_cargroups())
+    assert ctx["show_seat_group"] is False
+
+
+def test_berth_keyboard_no_together_for_berth_train():
+    ctx = f.build_filter_context(_berth_cargroups())
+    kb = f.build_filter_keyboard("", "any", 0, ctx)
+    cbs = [b["callback_data"] for row in kb for b in row]
+    assert "flt_berth_together" not in cbs
+    assert "flt_seats_set" not in cbs
+
+
+def test_seats_button_shows_current_count():
+    ctx = f.build_filter_context(_seated_cargroups())
+    kb = f.build_filter_keyboard("", "together", 0, ctx, min_seats=3)
+    flat = [b for row in kb for b in row]
+    seats_btn = next(b for b in flat if b["callback_data"] == "flt_seats_set")
+    assert "3" in seats_btn["text"]
+
+
+def test_format_filter_summary_together():
+    assert f.format_filter_summary("", "together", 0, min_seats=3) == "3+ мест рядом"
+    assert f.format_filter_summary("", "together", 5000, min_seats=2) == "2+ мест рядом · до 5000 ₽"
+
+
+def test_matched_unit_together():
+    assert f.matched_unit("together") == "групп мест"

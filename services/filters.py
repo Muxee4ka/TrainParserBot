@@ -14,8 +14,9 @@ CAR_TYPE_LABELS = {
 _BERTH_SUMMARY = {"lower": "нижнее", "upper": "верхнее", "side": "боковое",
                   "cabin": "купе целиком", "pair": "низ+верх в одном купе"}
 _BERTH_BTN = {"any": "Любая", "lower": "Нижнее", "upper": "Верхнее", "side": "Боковое",
-              "cabin": "🚪 Купе целиком", "pair": "🔼🔽 Низ+Верх вместе"}
-_BERTH_UNIT = {"cabin": "пустых купе", "pair": "купе с парой низ+верх"}
+              "cabin": "🚪 Купе целиком", "pair": "🔼🔽 Низ+Верх вместе",
+              "together": "🔗 Мест рядом"}
+_BERTH_UNIT = {"cabin": "пустых купе", "pair": "купе с парой низ+верх", "together": "групп мест"}
 
 
 def matched_unit(berth: str) -> str:
@@ -43,13 +44,15 @@ def build_filter_context(cargroups: list) -> dict:
     categories = []
     seen = set()
     prices = []
-    has_compartment = has_reserved = False
+    has_compartment = has_reserved = has_sedentary = False
     for cg in avail:
         ct = cg.get("CarType")
         if ct == "Compartment":
             has_compartment = True
         elif ct == "ReservedSeat":
             has_reserved = True
+        elif ct == "Sedentary":
+            has_sedentary = True
         tok = category_token(cg)
         if tok not in seen:
             seen.add(tok)
@@ -62,6 +65,7 @@ def build_filter_context(cargroups: list) -> dict:
         "has_berths": has_compartment or has_reserved,
         "show_side": has_reserved,
         "show_cabin_pair": has_compartment,
+        "show_seat_group": has_sedentary,
         "price_min": int(min(prices)) if prices else 0,
         "price_max": int(max(prices)) if prices else 0,
     }
@@ -87,13 +91,15 @@ def parse_filter_callback(data: str):
     return parts[1], parts[2]
 
 
-def format_filter_summary(car_types: str, berth: str, max_price: int) -> str:
+def format_filter_summary(car_types: str, berth: str, max_price: int, min_seats: int = 1) -> str:
     """Человекочитаемая сводка фильтра."""
     parts = []
     codes = [c for c in (car_types or "").split(",") if c]
     if codes:
         parts.append(", ".join(CAR_TYPE_LABELS.get(c, c) for c in codes))
-    if berth in _BERTH_SUMMARY:
+    if berth == "together":
+        parts.append(f"{max(1, min_seats)}+ мест рядом")
+    elif berth in _BERTH_SUMMARY:
         parts.append(_BERTH_SUMMARY[berth])
     if max_price:
         parts.append(f"до {max_price} ₽")
@@ -110,17 +116,22 @@ def _btn(text: str, callback_data: str, selected: bool = False) -> dict:
 
 def _berth_options(context: dict) -> list:
     """Доступные варианты полки под тип поезда."""
-    opts = ["any", "lower", "upper"]
-    if context.get("show_side"):
-        opts.append("side")
-    if context.get("show_cabin_pair"):
-        opts += ["cabin", "pair"]
+    opts = ["any"]
+    if context.get("has_berths"):
+        opts += ["lower", "upper"]
+        if context.get("show_side"):
+            opts.append("side")
+        if context.get("show_cabin_pair"):
+            opts += ["cabin", "pair"]
+    if context.get("show_seat_group"):
+        opts.append("together")
     return opts
 
 
 def build_filter_keyboard(car_types: str, berth: str, max_price: int, context: dict,
                           submit_text: str = "🔔 Подписаться",
-                          submit_cb: str = "subscribe_filtered") -> list:
+                          submit_cb: str = "subscribe_filtered",
+                          min_seats: int = 1) -> list:
     """Inline-клавиатура фильтров, адаптированная под поезд (context)."""
     selected = set(c for c in (car_types or "").split(",") if c)
     rows = []
@@ -131,10 +142,15 @@ def build_filter_keyboard(car_types: str, berth: str, max_price: int, context: d
         rows.append([_btn(c["label"], f"flt_car_{c['value']}", c["value"] in selected)
                      for c in cats[i:i + 2]])
 
-    # Полка — только если есть купе/плац, по одной кнопке в ряд
-    if context.get("has_berths"):
+    # Полка — если есть купе/плац, или «мест рядом» для сидячих; по одной кнопке в ряд
+    if context.get("has_berths") or context.get("show_seat_group"):
         for val in _berth_options(context):
             rows.append([_btn(_BERTH_BTN[val], f"flt_berth_{val}", berth == val)])
+
+    # Количество мест рядом — только когда доступен фильтр "вместе" (сидячие вагоны)
+    if context.get("show_seat_group"):
+        rows.append([{"text": f"🔢 Мест: {max(1, min_seats)} (изменить)",
+                      "callback_data": "flt_seats_set"}])
 
     # Цена — ввод суммы вручную (кнопка открывает запрос ввода)
     if context.get("price_max"):
