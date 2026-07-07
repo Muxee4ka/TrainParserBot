@@ -194,6 +194,8 @@ class SearchHandler(BaseHandler):
                 await self.handle_date_input(message, search_state)
             elif search_state.search_step == 'await_price':
                 await self.handle_price_input(message, search_state)
+            elif search_state.search_step == 'await_seats':
+                await self.handle_seats_input(message, search_state)
             else:
                 sent = await message.answer('Используйте кнопки для выбора поезда или подписки.')
                 search_state.messages_to_delete.append(sent.message_id)
@@ -799,6 +801,7 @@ class SearchHandler(BaseHandler):
                         train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
                         train.get('Provider', 'P1'),
                         car_types or None, max_price,
+                        min_count=subscription.min_seats,
                     )
                     if detail:
                         line += f"   ✅ {unit}: {len(detail)}\n   🚪 {format_seatmap_detail(berth, detail)}"
@@ -818,7 +821,7 @@ class SearchHandler(BaseHandler):
                         line += f"   ❌ нет ({unit})"
                 lines.append(line)
 
-            summary = flt.format_filter_summary(subscription.car_types, berth, max_price)
+            summary = flt.format_filter_summary(subscription.car_types, berth, max_price, subscription.min_seats)
             header = (
                 f"🔄 Текущее наличие по подписке #{subscription.id}\n"
                 f"{subscription.origin_name} → {subscription.destination_name}, "
@@ -873,6 +876,7 @@ class SearchHandler(BaseHandler):
             search_state.filter_car_types = ''
             search_state.filter_berth = 'any'
             search_state.filter_max_price = 0
+            search_state.min_seats = 1
             search_state.editing_subscription_id = None
             self.db_manager.save_search_state(search_state)
             await self._render_filter_panel(callback.message.chat.id, search_state)
@@ -914,6 +918,7 @@ class SearchHandler(BaseHandler):
                 search_state.origin_code, search_state.destination_code, dep,
                 search_state.selected_train_number, provider,
                 car_types or None, search_state.filter_max_price,
+                min_count=search_state.min_seats,
             )
             matched = {'total': n if n is not None else 0}
         else:
@@ -922,7 +927,8 @@ class SearchHandler(BaseHandler):
                 berth=search_state.filter_berth, max_price=search_state.filter_max_price,
             )
         summary = flt.format_filter_summary(
-            search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
+            search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
+            search_state.min_seats,
         )
         text = self._panel_text(breakdown, matched, summary,
                                 matched_unit=flt.matched_unit(search_state.filter_berth))
@@ -933,7 +939,7 @@ class SearchHandler(BaseHandler):
         context = flt.build_filter_context(cargroups)
         keyboard = flt.build_filter_keyboard(
             search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
-            context, submit_text=submit_text, submit_cb=submit_cb,
+            context, submit_text=submit_text, submit_cb=submit_cb, min_seats=search_state.min_seats,
         )
         if search_state.progress_message_id:
             await self.notification_service.edit_message(
@@ -975,6 +981,19 @@ class SearchHandler(BaseHandler):
                     return
                 # value == '0' — сброс лимита
                 search_state.filter_max_price = 0
+            elif kind == 'seats' and value == 'set':
+                # запрашиваем количество мест вводом сообщением
+                search_state.search_step = 'await_seats'
+                self.db_manager.save_search_state(search_state)
+                sent_id = await self.notification_service.send_message(
+                    user_id,
+                    "🔢 Введите нужное количество мест (например 3).",
+                )
+                if sent_id:
+                    search_state.messages_to_delete.append(sent_id)
+                    self.db_manager.save_search_state(search_state)
+                await callback.answer("Введите количество мест сообщением")
+                return
             self.db_manager.save_search_state(search_state)
             await self._render_filter_panel(callback.message.chat.id, search_state)
             await callback.answer()
@@ -994,6 +1013,21 @@ class SearchHandler(BaseHandler):
             await self._delete_user_messages(message.chat.id, search_state)
         except Exception as e:
             logger.error(f"Ошибка ввода цены: {e}")
+            search_state.search_step = 'done'
+            self.db_manager.save_search_state(search_state)
+
+    async def handle_seats_input(self, message: Message, search_state: SearchState):
+        """Обработка ручного ввода количества мест (после кнопки «Мест: N»)."""
+        try:
+            digits = ''.join(ch for ch in (message.text or '') if ch.isdigit())
+            search_state.min_seats = max(1, int(digits)) if digits else 1
+            # возвращаемся к панели фильтров
+            search_state.search_step = 'done'
+            self.db_manager.save_search_state(search_state)
+            await self._render_filter_panel(message.chat.id, search_state)
+            await self._delete_user_messages(message.chat.id, search_state)
+        except Exception as e:
+            logger.error(f"Ошибка ввода количества мест: {e}")
             search_state.search_step = 'done'
             self.db_manager.save_search_state(search_state)
 
@@ -1035,6 +1069,7 @@ class SearchHandler(BaseHandler):
             search_state.filter_car_types = sub.car_types or ''
             search_state.filter_berth = sub.berth or 'any'
             search_state.filter_max_price = sub.max_price or 0
+            search_state.min_seats = sub.min_seats or 1
             search_state.editing_subscription_id = subscription_id
             search_state.search_step = 'editfilters'
             search_state.progress_message_id = None  # рисуем панель отдельным сообщением
@@ -1056,9 +1091,11 @@ class SearchHandler(BaseHandler):
             ok = self.db_manager.update_subscription_filters(
                 sub_id, user_id,
                 search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
+                search_state.min_seats,
             )
             summary = flt.format_filter_summary(
-                search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price
+                search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
+                search_state.min_seats,
             )
             if ok:
                 text = (f"✅ Фильтры подписки #{sub_id} обновлены.\nФильтр: <b>{summary}</b>")
@@ -1124,7 +1161,7 @@ class SearchHandler(BaseHandler):
                     f"Поезд: <b>{search_state.selected_train_number}</b> {search_state.selected_train_info or ''}\n"
                     f"Маршрут: {search_state.origin_name} -> {search_state.destination_name}\n"
                     f"Дата: {search_state.departure_date[:10]}\n"
-                    f"Фильтр: {flt.format_filter_summary(search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price)}\n\n"
+                    f"Фильтр: {flt.format_filter_summary(search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price, search_state.min_seats)}\n\n"
                     f"Бот будет проверять наличие мест в поезде {search_state.selected_train_number} каждые 5 минут и уведомит вас при их появлении."
                 )
                 if search_state.progress_message_id:
