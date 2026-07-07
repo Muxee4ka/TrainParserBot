@@ -1,6 +1,7 @@
 from services.rzd_seatmap import (
     count_empty_compartments, empty_compartments_detail, format_empty_cabins,
     pair_compartments_detail, detail_for_berth, format_pairs, SeatMapService,
+    together_seats_detail, format_seat_groups, SEATMAP_BERTHS,
 )
 
 
@@ -134,3 +135,61 @@ def test_empty_compartments_graceful_on_error(monkeypatch):
 
     monkeypatch.setattr(svc, "_fetch", boom)
     assert svc.empty_compartments("2060001", "2060440", "2026-06-22T16:10:00", "090Г") is None
+
+
+def _payload_sedentary():
+    # сидячий вагон (Ласточка): блоки переменного размера, без деления на низ/верх
+    return {"Cars": [
+        {"CarType": "Sedentary", "CarNumber": "06", "FreePlacesByCompartments": [
+            {"CompartmentNumber": "1", "Places": "1, 2"},
+            {"CompartmentNumber": "3", "Places": "5, 6, 8"},
+            {"CompartmentNumber": "9", "Places": "35, 36, 38, 39, 40, 42"},
+        ]},
+        # плацкартный вагон не должен попадать в подсчёт сидячих групп
+        {"CarType": "ReservedSeat", "CarNumber": "10", "FreePlacesByCompartments": [
+            {"CompartmentNumber": "1", "Places": "1, 2, 3, 4"},
+        ]},
+    ]}
+
+
+def test_seatmap_berths_includes_together():
+    assert SEATMAP_BERTHS == ('cabin', 'pair', 'together')
+
+
+def test_together_seats_detail_threshold():
+    detail = together_seats_detail(_payload_sedentary(), 3)
+    # блок 1 (2 места) не проходит порог; блок 3 (3) и блок 9 (6) проходят
+    assert [d["compartment"] for d in detail] == ["3", "9"]
+
+
+def test_together_seats_detail_ignores_other_car_types():
+    detail = together_seats_detail(_payload_sedentary(), 4)
+    assert all(d["car"] == "06" for d in detail)  # плацкартный вагон 10 не попал
+
+
+def test_together_seats_detail_default_min_count_one():
+    detail = together_seats_detail(_payload_sedentary(), 1)
+    assert len(detail) == 3  # все три блока сидячего вагона
+
+
+def test_detail_for_berth_together_routes():
+    assert detail_for_berth(_payload_sedentary(), "together", min_count=3) == \
+           together_seats_detail(_payload_sedentary(), 3)
+
+
+def test_detail_for_berth_together_default_min_count():
+    assert detail_for_berth(_payload_sedentary(), "together") == \
+           together_seats_detail(_payload_sedentary(), 1)
+
+
+def test_format_seat_groups():
+    detail = together_seats_detail(_payload_sedentary(), 3)
+    assert format_seat_groups(detail) == (
+        "вагон 06: блок 3 (3 мест: 5, 6, 8); вагон 06: блок 9 (6 мест: 35, 36, 38, 39, 40, 42)"
+    )
+
+
+def test_format_seatmap_detail_together():
+    from services.rzd_seatmap import format_seatmap_detail
+    detail = together_seats_detail(_payload_sedentary(), 3)
+    assert format_seatmap_detail("together", detail) == format_seat_groups(detail)

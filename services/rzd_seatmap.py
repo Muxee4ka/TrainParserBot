@@ -27,7 +27,7 @@ CAR_PRICING_URL = (
 # Количество мест в стандартном купе
 COMPARTMENT_SIZE = 4
 # Фильтры полки, требующие схему вагона (сетевой запрос)
-SEATMAP_BERTHS = ('cabin', 'pair')
+SEATMAP_BERTHS = ('cabin', 'pair', 'together')
 
 
 def _berth_kind(car: dict) -> str:
@@ -100,18 +100,34 @@ def _sort_key(d):
     return (_int(d["car"]), _int(d["compartment"]))
 
 
-def empty_compartments_detail(payload: dict, car_types=None, max_price: int = 0) -> list:
-    """Полностью свободные купе: [{'car','compartment','places':[...]}], отсортировано.
-    Только купейные вагоны (целиком пустое купе — понятие купе)."""
+def blocks_with_at_least(payload: dict, min_size: int, car_types=None, max_price: int = 0,
+                         include_types=("Compartment",)) -> list:
+    """Блоки (вагон+CompartmentNumber), где свободно >= min_size мест:
+    [{'car','compartment','places':[...]}], отсортировано."""
     result = []
     comps_by_car = parse_compartments(payload, car_types=car_types, max_price=max_price,
-                                      include_types=("Compartment",))
+                                      include_types=include_types)
     for number, comps in comps_by_car.items():
         for comp, cell in comps.items():
-            if len(cell["all"]) >= COMPARTMENT_SIZE:
+            if len(cell["all"]) >= min_size:
                 result.append({"car": number, "compartment": comp, "places": sorted(cell["all"])})
     result.sort(key=_sort_key)
     return result
+
+
+def empty_compartments_detail(payload: dict, car_types=None, max_price: int = 0) -> list:
+    """Полностью свободные купе: [{'car','compartment','places':[...]}], отсортировано.
+    Только купейные вагоны (целиком пустое купе — понятие купе)."""
+    return blocks_with_at_least(payload, COMPARTMENT_SIZE, car_types=car_types, max_price=max_price,
+                                include_types=("Compartment",))
+
+
+def together_seats_detail(payload: dict, min_count: int, car_types=None, max_price: int = 0) -> list:
+    """Блоки сидячих мест (Sedentary), где свободно >= min_count мест рядом (одна
+    физическая группа кресел по CompartmentNumber). Приближение: если внутри блока
+    часть мест продана, оставшиеся свободные необязательно физически смежны."""
+    return blocks_with_at_least(payload, max(1, min_count), car_types=car_types, max_price=max_price,
+                                include_types=("Sedentary",))
 
 
 def pair_compartments_detail(payload: dict, car_types=None, max_price: int = 0) -> list:
@@ -130,10 +146,14 @@ def pair_compartments_detail(payload: dict, car_types=None, max_price: int = 0) 
     return result
 
 
-def detail_for_berth(payload: dict, berth: str, car_types=None, max_price: int = 0) -> list:
-    """Детали под нужный фильтр полки ('cabin' | 'pair') с учётом категорий и цены."""
+def detail_for_berth(payload: dict, berth: str, car_types=None, max_price: int = 0,
+                     min_count: int = 1) -> list:
+    """Детали под нужный фильтр полки ('cabin' | 'pair' | 'together') с учётом категорий
+    и цены. min_count используется только веткой 'together' (сколько мест нужно рядом)."""
     if berth == "pair":
         return pair_compartments_detail(payload, car_types=car_types, max_price=max_price)
+    if berth == "together":
+        return together_seats_detail(payload, min_count, car_types=car_types, max_price=max_price)
     return empty_compartments_detail(payload, car_types=car_types, max_price=max_price)
 
 
@@ -163,9 +183,23 @@ def format_pairs(detail: list, limit: int = 6) -> str:
     return "; ".join(parts) + tail
 
 
+def format_seat_groups(detail: list, limit: int = 6) -> str:
+    """Список групп сидячих мест: 'вагон 06: блок 3 (3 мест: 5, 6, 8)'."""
+    parts = []
+    for d in detail[:limit]:
+        places = ", ".join(map(str, d["places"]))
+        parts.append(f"вагон {d['car']}: блок {d['compartment']} ({len(d['places'])} мест: {places})")
+    tail = f"; и ещё {len(detail) - limit}" if len(detail) > limit else ""
+    return "; ".join(parts) + tail
+
+
 def format_seatmap_detail(berth: str, detail: list, limit: int = 6) -> str:
     """Человекочитаемый список под фильтр полки."""
-    return format_pairs(detail, limit) if berth == "pair" else format_empty_cabins(detail, limit)
+    if berth == "pair":
+        return format_pairs(detail, limit)
+    if berth == "together":
+        return format_seat_groups(detail, limit)
+    return format_empty_cabins(detail, limit)
 
 
 class SeatMapService:
