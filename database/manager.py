@@ -335,16 +335,17 @@ class DatabaseManager:
             conn.close()
 
     def update_subscription_filters(self, subscription_id: int, user_id: int,
-                                    car_types: str, berth: str, max_price: int) -> bool:
-        """Обновление фильтров (тип вагона / полка / цена) существующей подписки"""
+                                    car_types: str, berth: str, max_price: int,
+                                    min_seats: int) -> bool:
+        """Обновление фильтров (тип вагона / полка / цена / кол-во мест) существующей подписки"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE subscriptions
-                SET car_types = ?, berth = ?, max_price = ?
+                SET car_types = ?, berth = ?, max_price = ?, min_seats = ?
                 WHERE id = ? AND user_id = ?
-            ''', (car_types, berth, max_price, subscription_id, user_id))
+            ''', (car_types, berth, max_price, min_seats, subscription_id, user_id))
             success = cursor.rowcount > 0
             conn.commit()
             if success:

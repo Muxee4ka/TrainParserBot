@@ -55,12 +55,28 @@ def test_update_subscription_filters():
                        car_types="", min_seats=1, adult_passengers=1, children_passengers=0,
                        interval_minutes=5, is_active=True, created_at=datetime.now())
     sid = db.create_subscription(sub)
-    ok = db.update_subscription_filters(sid, 1, "Compartment", "cabin", 8000)
+    ok = db.update_subscription_filters(sid, 1, "Compartment", "cabin", 8000, 1)
     assert ok is True
     got = db.get_subscription(sid, 1)
     assert got.car_types == "Compartment" and got.berth == "cabin" and got.max_price == 8000
     # чужой пользователь не может изменить
-    assert db.update_subscription_filters(sid, 999, "Soft", "lower", 0) is False
+    assert db.update_subscription_filters(sid, 999, "Soft", "lower", 0, 1) is False
+
+
+def test_update_subscription_filters_min_seats_together():
+    from database import Subscription
+    from datetime import datetime
+    db = _fresh_db()
+    sub = Subscription(id=None, user_id=1, origin_code="A", origin_name="A",
+                       destination_code="B", destination_name="B",
+                       departure_date="2026-07-01T00:00:00", train_numbers="",
+                       car_types="", min_seats=1, adult_passengers=1, children_passengers=0,
+                       interval_minutes=5, is_active=True, created_at=datetime.now())
+    sid = db.create_subscription(sub)
+    ok = db.update_subscription_filters(sid, 1, "Sedentary", "together", 0, 3)
+    assert ok is True
+    got = db.get_subscription(sid, 1)
+    assert got.berth == "together" and got.min_seats == 3
 
 def test_migration_idempotent():
     db = _fresh_db()
