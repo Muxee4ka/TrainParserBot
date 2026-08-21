@@ -146,6 +146,21 @@ class RZDAPIService:
             tpq = car_group.get('PlaceQuantity', 0)
         return tpq or 0
 
+    @staticmethod
+    def _group_allowed(car_group: Dict, include_disabled: bool = False) -> bool:
+        """Учитывать ли группу вагонов при подсчёте мест и цены.
+
+        Места для инвалидов РЖД отдаёт отдельной группой целиком (проверено на
+        8 поездах, см. спеку 2026-08-21), поэтому достаточно отбросить группу по
+        флагу — обычные места при этом не теряются. Купить такое место в обычном
+        сценарии нельзя, а стоит оно дешевле и портит минимальную цену поезда.
+        """
+        if car_group.get('AvailabilityIndication') != 'Available':
+            return False
+        if include_disabled:
+            return True
+        return not car_group.get('HasPlacesForDisabledPersons')
+
     def check_available_seats(self, train: Dict, min_seats: int = 1) -> bool:
         """Проверка наличия свободных мест в поезде"""
         try:
@@ -209,12 +224,12 @@ class RZDAPIService:
             'duration': self.format_duration(train.get('TripDuration')),
         }
 
-    def count_seats_breakdown(self, train: Dict) -> Dict:
+    def count_seats_breakdown(self, train: Dict, include_disabled: bool = False) -> Dict:
         """Разбивка свободных мест: всего / нижние / верхние и по типам вагонов"""
         result = {'total': 0, 'lower': 0, 'upper': 0, 'types': {}}
         try:
             for cg in train.get('CarGroups', []):
-                if cg.get('AvailabilityIndication') != 'Available':
+                if not self._group_allowed(cg, include_disabled):
                     continue
                 qty = self._available_count(cg)
                 result['total'] += qty
@@ -227,7 +242,7 @@ class RZDAPIService:
         return result
 
     def match_seats(self, train: Dict, car_types=None, berth: str = 'any',
-                    max_price: int = 0) -> Dict:
+                    max_price: int = 0, include_disabled: bool = False) -> Dict:
         """Считает места, подходящие под фильтры подписки.
 
         car_types: коллекция кодов CarType (или None/пусто = любой).
@@ -240,7 +255,7 @@ class RZDAPIService:
         wanted = set(car_types) if car_types else None
         try:
             for cg in train.get('CarGroups', []):
-                if cg.get('AvailabilityIndication') != 'Available':
+                if not self._group_allowed(cg, include_disabled):
                     continue
                 # категория может задаваться кодом CarType (купе/плац) ИЛИ классом
                 # обслуживания (для сидячих: «Эконом+», «Бизнес» и т.п.)
@@ -284,12 +299,12 @@ class RZDAPIService:
             logger.error(f"Ошибка match_seats: {e}")
         return result
 
-    def min_price(self, train: Dict) -> Optional[float]:
+    def min_price(self, train: Dict, include_disabled: bool = False) -> Optional[float]:
         """Минимальная цена среди доступных вагонов (None, если мест нет)"""
         try:
             prices = [
                 cg.get('MinPrice') for cg in train.get('CarGroups', [])
-                if cg.get('AvailabilityIndication') == 'Available' and cg.get('MinPrice')
+                if self._group_allowed(cg, include_disabled) and cg.get('MinPrice')
             ]
             return min(prices) if prices else None
         except Exception as e:
