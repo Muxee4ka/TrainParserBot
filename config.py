@@ -3,10 +3,14 @@
 """
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Бандл сертификатов НУЦ Минцифры, лежит рядом с этим файлом.
+_DEFAULT_CA_BUNDLE = Path(__file__).resolve().parent / "certs" / "russian_trusted.pem"
 
 @dataclass
 class Config:
@@ -18,6 +22,10 @@ class Config:
     RZD_SUGGEST_URL: str = os.getenv("RZD_SUGGEST_URL", "https://ticket.rzd.ru/api/v1/suggests")
     # User Agent
     USER_AGENT: str = os.getenv("USER_AGENT", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+    # CA-бандл для запросов к РЖД: сайт живёт на сертификате НУЦ Минцифры,
+    # которого нет ни в certifi, ни в системном store, плюс сервер не отдаёт
+    # промежуточный Sub CA. Подробнее — certs/README.md.
+    RZD_CA_BUNDLE: str = os.getenv("RZD_CA_BUNDLE", str(_DEFAULT_CA_BUNDLE))
     # Database
     DATABASE_PATH: str = os.getenv("DATABASE_PATH", "data/train_subscriptions.db")
     # Monitoring settings
@@ -33,6 +41,18 @@ class Config:
 
 # Создаем экземпляр конфигурации
 config = Config()
+
+
+def rzd_verify():
+    """Значение для параметра `verify=` в запросах к РЖД.
+
+    Возвращает путь к бандлу Минцифры; если файла нет или RZD_CA_BUNDLE пуст —
+    True, то есть обычная проверка по certifi.
+    """
+    bundle = config.RZD_CA_BUNDLE
+    if bundle and os.path.isfile(bundle):
+        return bundle
+    return True
 
 def ensure_data_directory():
     """Создает директорию для данных если её нет"""

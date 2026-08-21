@@ -7,7 +7,7 @@ import json
 from typing import List, Dict, Optional
 from datetime import datetime
 
-from config import config
+from config import config, rzd_verify
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,8 @@ class RZDAPIService:
                 self.suggest_url, 
                 params=params, 
                 headers=headers, 
-                timeout=30
+                timeout=30,
+                verify=rzd_verify()
             )
             response.raise_for_status()
             
@@ -107,7 +108,8 @@ class RZDAPIService:
                 self.api_url, 
                 params=params, 
                 headers=headers, 
-                timeout=30
+                timeout=30,
+                verify=rzd_verify()
             )
             response.raise_for_status()
             

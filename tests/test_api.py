@@ -5,6 +5,8 @@ import pytest
 
 from dotenv import load_dotenv
 
+from config import rzd_verify
+
 load_dotenv()
 
 RUN_INTEGRATION = os.getenv("RUN_INTEGRATION_TESTS") == "1"
@@ -28,7 +30,8 @@ def test_station_search_integration():
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-    response = requests.get(suggest_url, params=params, headers=headers, timeout=30)
+    response = requests.get(suggest_url, params=params, headers=headers, timeout=30,
+                            verify=rzd_verify())
     response.raise_for_status()
     data = response.json()
 
@@ -67,7 +70,8 @@ def test_train_search_integration():
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     }
 
-    response = requests.get(api_url, params=params, headers=headers, timeout=30)
+    response = requests.get(api_url, params=params, headers=headers, timeout=30,
+                            verify=rzd_verify())
     response.raise_for_status()
     data = response.json()
 

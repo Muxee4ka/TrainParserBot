@@ -16,7 +16,7 @@ from collections import defaultdict
 
 import requests
 
-from config import config
+from config import config, rzd_verify
 
 logger = logging.getLogger(__name__)
 
@@ -230,7 +230,8 @@ class SeatMapService:
             "HasPlacesForLargeFamily": False,
             "CarIssuingType": "Passenger",
         }
-        resp = requests.post(CAR_PRICING_URL, json=body, headers=headers, timeout=30)
+        resp = requests.post(CAR_PRICING_URL, json=body, headers=headers, timeout=30,
+                             verify=rzd_verify())
         resp.raise_for_status()
         return resp.json()
 
