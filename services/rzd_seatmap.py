@@ -202,6 +202,135 @@ def format_seatmap_detail(berth: str, detail: list, limit: int = 6) -> str:
     return format_empty_cabins(detail, limit)
 
 
+_BERTH_RU = {
+    "lower": "нижнее",
+    "upper": "верхнее",
+    "side_lower": "боковое нижнее",
+    "side_upper": "боковое верхнее",
+    "other": "место",
+}
+
+
+def _price_text(mn, mx) -> str:
+    """Цена места. Строка Cars — ценовая корзина, и в ~7% случаев Min != Max,
+    поэтому точную цену обещаем только при совпадении границ."""
+    if not mn:
+        return ""
+    if mx and mx != mn:
+        return f"от {int(mn)} ₽"
+    return f"{int(mn)} ₽"
+
+
+class TrainSeats:
+    """Разобранная схема вагонов одного поезда. Без сети.
+
+    Держит один ответ CarPricing и отвечает на все вопросы о нём: сколько мест
+    под фильтр, какие именно, как их показать пользователю. Раньше на каждый
+    такой вопрос делался отдельный сетевой запрос — см. спеку 2026-08-21.
+    """
+
+    def __init__(self, payload: dict):
+        self.payload = payload or {}
+
+    def _payload(self, include_disabled: bool = False) -> dict:
+        """Payload без строк с местами для инвалидов (если их не просили)."""
+        if include_disabled:
+            return self.payload
+        cars = [c for c in (self.payload.get("Cars") or [])
+                if not c.get("IsForDisabledPersons")]
+        return {**self.payload, "Cars": cars}
+
+    def places(self, berth: str = "any", car_types=None, max_price: int = 0,
+               include_disabled: bool = False) -> list:
+        """Плоский список свободных мест с вагоном, полкой и ценой.
+
+        Возвращает [{'car', 'place', 'compartment', 'berth', 'min_price',
+        'max_price', 'car_name', 'service_class'}], отсортированный по вагону
+        и номеру места.
+        """
+        out = []
+        try:
+            for car in self._payload(include_disabled).get("Cars") or []:
+                if not _car_allowed(car, set(car_types) if car_types else None):
+                    continue
+                if max_price and (car.get("MinPrice") or 0) > max_price:
+                    continue
+                kind = _berth_kind(car)
+                if berth == "side":
+                    if kind not in ("side_lower", "side_upper"):
+                        continue
+                elif berth in ("lower", "upper"):
+                    if kind != berth:
+                        continue
+                for blk in car.get("FreePlacesByCompartments") or []:
+                    for raw in str(blk.get("Places", "")).split(","):
+                        raw = raw.strip()
+                        if not raw.isdigit():
+                            continue
+                        out.append({
+                            "car": car.get("CarNumber"),
+                            "place": int(raw),
+                            "compartment": blk.get("CompartmentNumber"),
+                            "berth": kind,
+                            "min_price": car.get("MinPrice"),
+                            "max_price": car.get("MaxPrice"),
+                            "car_name": car.get("CarTypeName") or car.get("CarType") or "",
+                            "service_class": car.get("ServiceClassNameRu") or "",
+                        })
+        except Exception as e:
+            logger.error(f"Ошибка разбора мест: {e}")
+            return []
+
+        def _key(d):
+            car = d["car"]
+            return (int(car) if str(car).isdigit() else 0, d["place"])
+
+        return sorted(out, key=_key)
+
+    def by_berth(self, berth: str, car_types=None, max_price: int = 0, min_count: int = 1,
+                 include_disabled: bool = False) -> list:
+        """Детали под «тяжёлый» фильтр полки ('cabin' | 'pair' | 'together')."""
+        return detail_for_berth(self._payload(include_disabled), berth,
+                                car_types=car_types, max_price=max_price,
+                                min_count=min_count)
+
+    def count(self, berth: str, car_types=None, max_price: int = 0, min_count: int = 1,
+              include_disabled: bool = False) -> int:
+        """Число подходящих купе/групп под «тяжёлый» фильтр полки."""
+        return len(self.by_berth(berth, car_types=car_types, max_price=max_price,
+                                 min_count=min_count, include_disabled=include_disabled))
+
+    def describe(self, berth: str = "any", car_types=None, max_price: int = 0,
+                 min_count: int = 1, include_disabled: bool = False, limit: int = 6) -> str:
+        """Человекочитаемая детализация для уведомления (#8).
+
+        Для 'cabin'/'pair'/'together' — прежний компактный формат по купе.
+        Для остальных фильтров — блоки «вагон / место / полка / цена».
+        """
+        if berth in SEATMAP_BERTHS:
+            detail = self.by_berth(berth, car_types=car_types, max_price=max_price,
+                                   min_count=min_count, include_disabled=include_disabled)
+            return format_seatmap_detail(berth, detail, limit) if detail else ""
+
+        found = self.places(berth=berth, car_types=car_types, max_price=max_price,
+                            include_disabled=include_disabled)
+        if not found:
+            return ""
+        blocks = []
+        for d in found[:limit]:
+            klass = f" ({d['service_class']})" if d["service_class"] else (
+                f" ({d['car_name']})" if d["car_name"] else "")
+            line = f"🚃 Вагон {d['car']}{klass}\n🛏 Место {d['place']:03d} ({_BERTH_RU.get(d['berth'], 'место')})"
+            price = _price_text(d["min_price"], d["max_price"])
+            if price:
+                line += f"\n💰 {price}"
+            blocks.append(line)
+        text = "\n\n".join(blocks)
+        if len(found) > limit:
+            text += f"\n\n… и ещё {len(found) - limit}"
+        return text
+
+
 class SeatMapService:
     """Обёртка над эндпоинтом схемы вагонов РЖД (CarPricing)."""
 
@@ -235,18 +364,32 @@ class SeatMapService:
         resp.raise_for_status()
         return resp.json()
 
+    def seats(self, origin_code: str, destination_code: str, departure_datetime: str,
+              train_number: str, provider: str = "P1"):
+        """Схема вагонов поезда одним запросом, или None при сетевой ошибке.
+
+        Единственный сетевой метод сервиса. Всё, что дальше нужно знать о местах,
+        спрашивается у возвращённого TrainSeats уже без сети — благодаря этому на
+        пути уведомления схема добывается один раз, а не отдельно под каждый
+        вопрос (раньше count и format делали по своему запросу на тот же поезд).
+        """
+        try:
+            payload = self._fetch(origin_code, destination_code, departure_datetime,
+                                  train_number, provider)
+            return TrainSeats(payload)
+        except Exception as e:
+            logger.error(f"Схема вагонов недоступна ({train_number}): {e}")
+            return None
+
     def detail_for_berth(self, berth: str, origin_code: str, destination_code: str,
                          departure_datetime: str, train_number: str, provider: str = "P1",
                          car_types=None, max_price: int = 0, min_count: int = 1):
         """Детали под фильтр полки ('cabin'|'pair'|'together') с учётом категорий/цены,
         или None при ошибке. min_count используется только веткой 'together'."""
-        try:
-            payload = self._fetch(origin_code, destination_code, departure_datetime, train_number, provider)
-            return detail_for_berth(payload, berth, car_types=car_types, max_price=max_price,
-                                    min_count=min_count)
-        except Exception as e:
-            logger.error(f"Схема вагонов недоступна ({train_number}): {e}")
+        seats = self.seats(origin_code, destination_code, departure_datetime, train_number, provider)
+        if seats is None:
             return None
+        return seats.by_berth(berth, car_types=car_types, max_price=max_price, min_count=min_count)
 
     def count_for_berth(self, berth: str, origin_code: str, destination_code: str,
                         departure_datetime: str, train_number: str, provider: str = "P1",
