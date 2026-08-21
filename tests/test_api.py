@@ -77,3 +77,43 @@ def test_train_search_integration():
 
     assert isinstance(data, dict)
     assert 'Trains' in data
+
+
+@pytest.mark.skipif(not RUN_INTEGRATION, reason="Integration tests are disabled. Set RUN_INTEGRATION_TESTS=1 to enable.")
+def test_disabled_car_group_is_wholly_disabled():
+    """Инвариант, на котором стоит фильтр инвалидных мест (#9).
+
+    Мы отбрасываем CarGroup целиком по HasPlacesForDisabledPersons, не обращаясь
+    к дорогому CarPricing. Это корректно, только пока помеченная группа состоит
+    ИЗ ОДНИХ инвалидных мест. Если РЖД начнёт смешивать их с обычными, дешёвый
+    предикат станет отбрасывать покупаемые места — тест это поймает.
+    """
+    from services.rzd_api import RZDAPIService
+    from services.rzd_seatmap import SeatMapService
+
+    api, sm = RZDAPIService(), SeatMapService()
+    trains = api.search_trains('2000000', '2060000', '21.09.2026')['trains']
+    assert trains, "РЖД не вернул поездов — проверить маршрут/дату теста"
+
+    checked = 0
+    for train in trains[:5]:
+        flagged = [g for g in (train.get('CarGroups') or [])
+                   if g.get('HasPlacesForDisabledPersons')]
+        if not flagged:
+            continue
+        seats = sm.seats('2000000', '2060000', train.get('LocalDepartureDateTime'),
+                         train.get('TrainNumber'), train.get('Provider', 'P1'))
+        if seats is None:
+            continue
+        all_places = len(seats.places(include_disabled=True))
+        normal_places = len(seats.places(include_disabled=False))
+        disabled_places = all_places - normal_places
+        flagged_total = sum(g.get('TotalPlaceQuantity') or 0 for g in flagged)
+        assert flagged_total == disabled_places, (
+            f"поезд {train.get('TrainNumber')}: помеченная группа содержит "
+            f"{flagged_total} мест, но инвалидных по схеме вагонов {disabled_places} — "
+            f"группа перестала быть однородной, предикат в _group_allowed теперь неверен"
+        )
+        checked += 1
+
+    assert checked > 0, "не нашлось ни одного поезда с инвалидной группой — тест ничего не проверил"
