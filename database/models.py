@@ -26,6 +26,9 @@ class Subscription:
     created_at: datetime
     berth: str = 'any'
     max_price: int = 0
+    # Показывать места для инвалидов. По умолчанию скрыты: купить их в обычном
+    # сценарии нельзя, а стоят они дешевле и портят минимальную цену (#9).
+    include_disabled: bool = False
 
 
 @dataclass
@@ -53,5 +56,6 @@ class SearchState:
     selected_train_cargroups: str = ''
     editing_subscription_id: Optional[int] = None  # id подписки в режиме редактирования фильтров
     station_options: str = ''  # JSON-карта {код станции: имя} для надёжного восстановления имени
+    filter_include_disabled: bool = False  # показывать места для инвалидов (#9)
 
 

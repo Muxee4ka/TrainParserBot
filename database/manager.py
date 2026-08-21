@@ -96,6 +96,8 @@ class DatabaseManager:
                     cursor.execute("ALTER TABLE subscriptions ADD COLUMN berth TEXT DEFAULT 'any'")
                 if 'max_price' not in cols:
                     cursor.execute("ALTER TABLE subscriptions ADD COLUMN max_price INTEGER DEFAULT 0")
+                if 'include_disabled' not in cols:
+                    cursor.execute("ALTER TABLE subscriptions ADD COLUMN include_disabled INTEGER DEFAULT 0")
                 cursor.execute("PRAGMA table_info(search_states)")
                 scols = [r[1] for r in cursor.fetchall()]
                 for col, ddl in (
@@ -105,6 +107,7 @@ class DatabaseManager:
                     ('selected_train_cargroups', "ALTER TABLE search_states ADD COLUMN selected_train_cargroups TEXT DEFAULT ''"),
                     ('editing_subscription_id', "ALTER TABLE search_states ADD COLUMN editing_subscription_id INTEGER"),
                     ('station_options', "ALTER TABLE search_states ADD COLUMN station_options TEXT DEFAULT ''"),
+                    ('filter_include_disabled', "ALTER TABLE search_states ADD COLUMN filter_include_disabled INTEGER DEFAULT 0"),
                 ):
                     if col not in scols:
                         cursor.execute(ddl)
@@ -130,15 +133,16 @@ class DatabaseManager:
                 INSERT INTO subscriptions
                 (user_id, origin_code, origin_name, destination_code, destination_name,
                  departure_date, train_numbers, car_types, min_seats, adult_passengers,
-                 children_passengers, interval_minutes, berth, max_price)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 children_passengers, interval_minutes, berth, max_price, include_disabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 subscription.user_id, subscription.origin_code, subscription.origin_name,
                 subscription.destination_code, subscription.destination_name,
                 subscription.departure_date, subscription.train_numbers, subscription.car_types,
                 subscription.min_seats, subscription.adult_passengers,
                 subscription.children_passengers, subscription.interval_minutes,
-                subscription.berth, subscription.max_price
+                subscription.berth, subscription.max_price,
+                int(bool(subscription.include_disabled))
             ))
             
             subscription_id = cursor.lastrowid
@@ -161,7 +165,8 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT id, user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, train_numbers, car_types, min_seats, adult_passengers,
-                       children_passengers, interval_minutes, is_active, created_at, berth, max_price
+                       children_passengers, interval_minutes, is_active, created_at, berth, max_price,
+                       include_disabled
                 FROM subscriptions
                 WHERE user_id = ?
                 ORDER BY created_at DESC
@@ -188,7 +193,8 @@ class DatabaseManager:
                     is_active=bool(row[13]),
                     created_at=datetime.fromisoformat(row[14]),
                     berth=row[15] if row[15] is not None else 'any',
-                    max_price=row[16] if row[16] is not None else 0
+                    max_price=row[16] if row[16] is not None else 0,
+                    include_disabled=bool(row[17])
                 )
                 subscriptions.append(subscription)
 
@@ -208,7 +214,8 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT id, user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, train_numbers, car_types, min_seats, adult_passengers,
-                       children_passengers, interval_minutes, is_active, created_at, berth, max_price
+                       children_passengers, interval_minutes, is_active, created_at, berth, max_price,
+                       include_disabled
                 FROM subscriptions
                 WHERE id = ? AND user_id = ?
             ''', (subscription_id, user_id))
@@ -232,7 +239,8 @@ class DatabaseManager:
                 is_active=bool(row[13]),
                 created_at=datetime.fromisoformat(row[14]),
                 berth=row[15] if row[15] is not None else 'any',
-                max_price=row[16] if row[16] is not None else 0
+                max_price=row[16] if row[16] is not None else 0,
+                include_disabled=bool(row[17])
             )
         except Exception as e:
             logger.error(f"Ошибка получения подписки {subscription_id}: {e}")
@@ -249,7 +257,8 @@ class DatabaseManager:
             cursor.execute('''
                 SELECT id, user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, train_numbers, car_types, min_seats, adult_passengers,
-                       children_passengers, interval_minutes, is_active, created_at, berth, max_price
+                       children_passengers, interval_minutes, is_active, created_at, berth, max_price,
+                       include_disabled
                 FROM subscriptions
                 WHERE is_active = 1
             ''')
@@ -275,7 +284,8 @@ class DatabaseManager:
                     is_active=bool(row[13]),
                     created_at=datetime.fromisoformat(row[14]),
                     berth=row[15] if row[15] is not None else 'any',
-                    max_price=row[16] if row[16] is not None else 0
+                    max_price=row[16] if row[16] is not None else 0,
+                    include_disabled=bool(row[17])
                 )
                 subscriptions.append(subscription)
 
@@ -336,16 +346,17 @@ class DatabaseManager:
 
     def update_subscription_filters(self, subscription_id: int, user_id: int,
                                     car_types: str, berth: str, max_price: int,
-                                    min_seats: int) -> bool:
-        """Обновление фильтров (тип вагона / полка / цена / кол-во мест) существующей подписки"""
+                                    min_seats: int, include_disabled: bool = False) -> bool:
+        """Обновление фильтров (тип вагона / полка / цена / кол-во мест / инвалидные) подписки"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE subscriptions
-                SET car_types = ?, berth = ?, max_price = ?, min_seats = ?
+                SET car_types = ?, berth = ?, max_price = ?, min_seats = ?, include_disabled = ?
                 WHERE id = ? AND user_id = ?
-            ''', (car_types, berth, max_price, min_seats, subscription_id, user_id))
+            ''', (car_types, berth, max_price, min_seats,
+                  int(bool(include_disabled)), subscription_id, user_id))
             success = cursor.rowcount > 0
             conn.commit()
             if success:
@@ -433,8 +444,9 @@ class DatabaseManager:
                 (user_id, origin_code, origin_name, destination_code, destination_name,
                  departure_date, adult_passengers, children_passengers, min_seats,
                  train_numbers, car_types, progress_message_id, selected_train_number, selected_train_info, search_step, updated_at, messages_to_delete,
-                 filter_car_types, filter_berth, filter_max_price, selected_train_cargroups, editing_subscription_id, station_options)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 filter_car_types, filter_berth, filter_max_price, selected_train_cargroups, editing_subscription_id, station_options,
+                 filter_include_disabled)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 search_state.user_id,
                 search_state.origin_code,
@@ -459,6 +471,7 @@ class DatabaseManager:
                 getattr(search_state, 'selected_train_cargroups', ''),
                 getattr(search_state, 'editing_subscription_id', None),
                 getattr(search_state, 'station_options', ''),
+                int(bool(getattr(search_state, 'filter_include_disabled', False))),
             ))
             conn.commit()
         except Exception as e:
@@ -475,7 +488,8 @@ class DatabaseManager:
                 SELECT user_id, origin_code, origin_name, destination_code, destination_name,
                        departure_date, adult_passengers, children_passengers, min_seats,
                        train_numbers, car_types, progress_message_id, selected_train_number, selected_train_info, search_step, messages_to_delete,
-                       filter_car_types, filter_berth, filter_max_price, selected_train_cargroups, editing_subscription_id, station_options
+                       filter_car_types, filter_berth, filter_max_price, selected_train_cargroups, editing_subscription_id, station_options,
+                       filter_include_disabled
                 FROM search_states
                 WHERE user_id = ?
             ''', (user_id,))
@@ -504,7 +518,8 @@ class DatabaseManager:
                     filter_max_price=row[18] or 0,
                     selected_train_cargroups=row[19] or '',
                     editing_subscription_id=row[20],
-                    station_options=row[21] or ''
+                    station_options=row[21] or '',
+                    filter_include_disabled=bool(row[22])
                 )
             return None
         except Exception as e:
