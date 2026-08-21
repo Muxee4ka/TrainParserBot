@@ -66,40 +66,62 @@ class MonitoringService:
             return False
 
     @staticmethod
-    def count_matched(rzd_api, subscription, train) -> int:
+    def _train_seats(subscription, train, seats_cache=None):
+        """Схема вагонов поезда, один запрос на поезд за цикл.
+
+        seats_cache переживает и подсчёт, и форматирование уведомления, поэтому
+        схема добывается однажды. Раньше count_matched и format_availability_message
+        били по сети независимо — два запроса на один поезд.
+        """
+        from services.rzd_seatmap import SeatMapService
+        key = train.get('TrainNumber') or train.get('DisplayTrainNumber') or ''
+        if seats_cache is not None and key in seats_cache:
+            return seats_cache[key]
+        seats = SeatMapService().seats(
+            subscription.origin_code, subscription.destination_code,
+            train.get('LocalDepartureDateTime'), key, train.get('Provider', 'P1'),
+        )
+        if seats_cache is not None:
+            seats_cache[key] = seats
+        return seats
+
+    @classmethod
+    def count_matched(cls, rzd_api, subscription, train, seats_cache=None) -> int:
         """Сколько мест поезда подходит под фильтр подписки.
 
         Для berth 'cabin'/'pair'/'together' считает через схему вагонов (CarPricing) —
         агрегатных данных недостаточно. Иначе — match_seats.
         """
-        from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS
-        if subscription.berth in SEATMAP_BERTHS:
-            car_types = [c for c in (subscription.car_types or '').split(',') if c]
-            n = SeatMapService().count_for_berth(
-                subscription.berth,
-                subscription.origin_code, subscription.destination_code,
-                train.get('LocalDepartureDateTime'),
-                train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
-                train.get('Provider', 'P1'),
-                car_types=car_types or None, max_price=subscription.max_price,
-                min_count=subscription.min_seats,
-            )
-            return n or 0
+        from services.rzd_seatmap import SEATMAP_BERTHS
         car_types = [c for c in (subscription.car_types or '').split(',') if c]
+        incl = bool(getattr(subscription, 'include_disabled', False))
+        if subscription.berth in SEATMAP_BERTHS:
+            seats = cls._train_seats(subscription, train, seats_cache)
+            if seats is None:
+                return 0
+            return seats.count(
+                subscription.berth, car_types=car_types or None,
+                max_price=subscription.max_price, min_count=subscription.min_seats,
+                include_disabled=incl,
+            )
         return rzd_api.match_seats(
             train, car_types=car_types or None,
             berth=subscription.berth, max_price=subscription.max_price,
+            include_disabled=incl,
         )['total']
 
     @classmethod
-    def _filtered_state(cls, rzd_api, subscription, trains: list):
-        """Возвращает (подходящие_поезда, строка_состояния) с учётом фильтров подписки."""
+    def _filtered_state(cls, rzd_api, subscription, trains: list, seats_cache=None):
+        """Возвращает (подходящие_поезда, строка_состояния) с учётом фильтров подписки.
+
+        seats_cache (если передан) наполняется схемами вагонов, чтобы уведомление
+        не запрашивало их повторно."""
         available, parts = [], []
         for train in trains:
             number = rzd_api.extract_train_info(train)['number']
             if subscription.train_numbers and number not in subscription.train_numbers.split(','):
                 continue
-            count = cls.count_matched(rzd_api, subscription, train)
+            count = cls.count_matched(rzd_api, subscription, train, seats_cache)
             if count >= max(1, subscription.min_seats):
                 available.append(train)
             parts.append(f"{number}:{count}")
@@ -126,15 +148,18 @@ class MonitoringService:
             
             # Проверяем наличие мест (с учётом фильтров подписки) и готовим краткое состояние.
             # Для фильтра «купе целиком» внутри идёт сетевой запрос схемы вагонов — уводим в поток.
+            # Схемы вагонов, добытые при подсчёте, переиспользуются уведомлением
+            seats_cache = {}
             available_trains, current_state = await asyncio.to_thread(
-                self._filtered_state, self.rzd_api, subscription, trains_data['trains']
+                self._filtered_state, self.rzd_api, subscription, trains_data['trains'],
+                seats_cache
             )
             last_state = self.db_manager.get_subscription_last_state(subscription.id)
 
             # Отправляем уведомление только если текущая сводка отличается от предыдущей,
             # и одновременно сейчас есть доступные места по условиям подписки.
             if available_trains and current_state != (last_state or ""):
-                await self.send_availability_notification(subscription, available_trains)
+                await self.send_availability_notification(subscription, available_trains, seats_cache)
 
             # Сохраняем текущее состояние всегда
             self.db_manager.save_subscription_last_state(subscription.id, current_state)
@@ -142,11 +167,13 @@ class MonitoringService:
         except Exception as e:
             logger.error(f"Ошибка при проверке подписки {subscription.id}: {e}")
     
-    async def send_availability_notification(self, subscription: Subscription, trains: List[dict]):
+    async def send_availability_notification(self, subscription: Subscription, trains: List[dict],
+                                             seats_cache=None):
         """Отправка уведомления о появлении мест"""
         try:
             # для cabin внутри идёт сетевой запрос схемы вагонов — уводим в поток
-            message = await asyncio.to_thread(self.format_availability_message, subscription, trains)
+            message = await asyncio.to_thread(self.format_availability_message, subscription, trains,
+                                              seats_cache)
             # резолв nodeId делает сетевые запросы — уводим в поток
             purchase_url = await asyncio.to_thread(
                 self.rzd_api.build_purchase_url,
@@ -164,7 +191,8 @@ class MonitoringService:
         except Exception as e:
             logger.error(f"Ошибка отправки уведомления: {e}")
     
-    def format_availability_message(self, subscription: Subscription, trains: List[dict]) -> str:
+    def format_availability_message(self, subscription: Subscription, trains: List[dict],
+                                    seats_cache=None) -> str:
         """Форматирование сообщения о появлении мест"""
         message = f"🔔 Уведомление о появлении мест!\n\n"
         message += f"Подписка #{subscription.id}\n"
@@ -175,7 +203,9 @@ class MonitoringService:
         berth = subscription.berth
         max_price = subscription.max_price
 
-        summary = format_filter_summary(subscription.car_types, berth, max_price, subscription.min_seats)
+        incl = bool(getattr(subscription, 'include_disabled', False))
+        summary = format_filter_summary(subscription.car_types, berth, max_price,
+                                        subscription.min_seats, include_disabled=incl)
         message += f"Фильтр: {summary}\n\n"
 
         for i, train in enumerate(trains[:5], 1):  # Показываем первые 5 поездов
@@ -186,24 +216,20 @@ class MonitoringService:
             message += f"   ⏰ {t['departure']} → {t['arrival']}{duration}\n"
 
             unit = matched_unit(berth)
-            from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS, format_seatmap_detail
+            from services.rzd_seatmap import SEATMAP_BERTHS
+            # Схему вагонов берём один раз на поезд: если цикл проверки её уже
+            # добыл (фильтры cabin/pair/together), переиспользуем из кэша.
+            seats = self._train_seats(subscription, train, seats_cache)
             if berth in SEATMAP_BERTHS:
-                # точный список купе через схему вагонов (с номерами)
-                detail = SeatMapService().detail_for_berth(
-                    berth,
-                    subscription.origin_code, subscription.destination_code,
-                    train.get('LocalDepartureDateTime'),
-                    train.get('TrainNumber') or train.get('DisplayTrainNumber') or '',
-                    train.get('Provider', 'P1'),
-                    car_types=car_types or None, max_price=max_price,
-                    min_count=subscription.min_seats,
-                ) or []
+                detail = seats.by_berth(
+                    berth, car_types=car_types or None, max_price=max_price,
+                    min_count=subscription.min_seats, include_disabled=incl,
+                ) if seats else []
                 message += f"   ✅ Доступно ({unit}): {len(detail)}\n"
-                if detail:
-                    message += f"   🚪 {format_seatmap_detail(berth, detail)}\n"
             else:
                 m = self.rzd_api.match_seats(
-                    train, car_types=car_types or None, berth=berth, max_price=max_price
+                    train, car_types=car_types or None, berth=berth, max_price=max_price,
+                    include_disabled=incl,
                 )
                 seats_line = f"   ✅ Доступно ({unit}): {m['total']}"
                 if m['lower'] or m['upper']:
@@ -211,6 +237,19 @@ class MonitoringService:
                 message += seats_line + "\n"
                 if m['min_price']:
                     message += f"   💰 от {m['min_price']:.0f} ₽\n"
+
+            # Детализация: вагон / место / полка / цена. Без неё пользователь идёт
+            # искать найденное на сайте РЖД вручную (#8). Схема может быть
+            # недоступна — тогда уведомление уходит без деталей, но уходит.
+            if seats is not None:
+                detail_text = seats.describe(
+                    berth, car_types=car_types or None, max_price=max_price,
+                    min_count=subscription.min_seats, include_disabled=incl,
+                )
+                if detail_text:
+                    message += "\n" + "\n".join(
+                        f"   {line}" if line else "" for line in detail_text.split("\n")
+                    ) + "\n"
             message += "\n"
 
         return message

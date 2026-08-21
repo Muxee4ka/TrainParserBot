@@ -56,17 +56,26 @@ def test_format_availability_message_respects_price_filter():
 
 
 def test_count_matched_together_passes_min_seats(monkeypatch):
+    """min_seats доходит до матчинга схемы вагонов.
+
+    После перехода на TrainSeats (#8) шов сместился с count_for_berth на
+    SeatMapService.seats() — патчим его, смысл теста прежний.
+    """
     from services import rzd_seatmap
     captured = {}
 
-    def fake_count_for_berth(self, berth, *args, **kwargs):
-        captured['min_count'] = kwargs.get('min_count')
-        return 2
+    class FakeSeats:
+        def count(self, berth, **kwargs):
+            captured['berth'] = berth
+            captured['min_count'] = kwargs.get('min_count')
+            return 2
 
-    monkeypatch.setattr(rzd_seatmap.SeatMapService, "count_for_berth", fake_count_for_berth)
+    monkeypatch.setattr(rzd_seatmap.SeatMapService, "seats",
+                        lambda self, *a, **kw: FakeSeats())
     api = RZDAPIService()
     sub = _sub(berth="together", min_seats=3, car_types="Sedentary")
     train = {"TrainNumber": "812С", "CarGroups": [], "LocalDepartureDateTime": "2026-07-07T16:10:00"}
     n = MonitoringService.count_matched(api, sub, train)
     assert n == 2
+    assert captured['berth'] == "together"
     assert captured['min_count'] == 3
