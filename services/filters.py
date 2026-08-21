@@ -91,7 +91,8 @@ def parse_filter_callback(data: str):
     return parts[1], parts[2]
 
 
-def format_filter_summary(car_types: str, berth: str, max_price: int, min_seats: int = 1) -> str:
+def format_filter_summary(car_types: str, berth: str, max_price: int, min_seats: int = 1,
+                          include_disabled: bool = False) -> str:
     """Человекочитаемая сводка фильтра."""
     parts = []
     codes = [c for c in (car_types or "").split(",") if c]
@@ -103,6 +104,10 @@ def format_filter_summary(car_types: str, berth: str, max_price: int, min_seats:
         parts.append(_BERTH_SUMMARY[berth])
     if max_price:
         parts.append(f"до {max_price} ₽")
+    # Скрытие инвалидных мест — поведение по умолчанию, о нём не пишем;
+    # упоминаем только явное включение, чтобы не засорять типовую сводку.
+    if include_disabled:
+        parts.append("с местами для инвалидов")
     return " · ".join(parts) if parts else "любые места"
 
 
@@ -131,7 +136,7 @@ def _berth_options(context: dict) -> list:
 def build_filter_keyboard(car_types: str, berth: str, max_price: int, context: dict,
                           submit_text: str = "🔔 Подписаться",
                           submit_cb: str = "subscribe_filtered",
-                          min_seats: int = 1) -> list:
+                          min_seats: int = 1, include_disabled: bool = False) -> list:
     """Inline-клавиатура фильтров, адаптированная под поезд (context)."""
     selected = set(c for c in (car_types or "").split(",") if c)
     rows = []
@@ -159,6 +164,14 @@ def build_filter_keyboard(car_types: str, berth: str, max_price: int, context: d
         if max_price:
             price_row.append({"text": "♾ Сброс", "callback_data": "flt_price_0"})
         rows.append(price_row)
+
+    # Места для инвалидов: по умолчанию скрыты (их нельзя купить в обычном
+    # сценарии, а низкая цена искажает «самый выгодный вариант»). Кнопка
+    # предлагает противоположное текущему состоянию.
+    if include_disabled:
+        rows.append([_btn("♿ Места для инвалидов: показаны", "flt_disabled_0", True)])
+    else:
+        rows.append([_btn("♿ Места для инвалидов: скрыты", "flt_disabled_1")])
 
     rows.append([{"text": submit_text, "callback_data": submit_cb, "style": "primary"}])
     return rows

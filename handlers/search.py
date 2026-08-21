@@ -877,6 +877,7 @@ class SearchHandler(BaseHandler):
             search_state.filter_berth = 'any'
             search_state.filter_max_price = 0
             search_state.min_seats = 1
+            search_state.filter_include_disabled = False
             search_state.editing_subscription_id = None
             self.db_manager.save_search_state(search_state)
             await self._render_filter_panel(callback.message.chat.id, search_state)
@@ -909,7 +910,8 @@ class SearchHandler(BaseHandler):
         cargroups, provider, dep = self._load_train(search_state.selected_train_cargroups)
         train = {'CarGroups': cargroups}
         car_types = [c for c in (search_state.filter_car_types or '').split(',') if c]
-        breakdown = self.rzd_api.match_seats(train)
+        incl = bool(search_state.filter_include_disabled)
+        breakdown = self.rzd_api.match_seats(train, include_disabled=incl)
         from services.rzd_seatmap import SeatMapService, SEATMAP_BERTHS
         if search_state.filter_berth in SEATMAP_BERTHS:
             # точный подсчёт купе через схему вагонов (сетевой запрос — в поток)
@@ -925,10 +927,11 @@ class SearchHandler(BaseHandler):
             matched = self.rzd_api.match_seats(
                 train, car_types=car_types or None,
                 berth=search_state.filter_berth, max_price=search_state.filter_max_price,
+                include_disabled=incl,
             )
         summary = flt.format_filter_summary(
             search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
-            search_state.min_seats,
+            search_state.min_seats, include_disabled=incl,
         )
         text = self._panel_text(breakdown, matched, summary,
                                 matched_unit=flt.matched_unit(search_state.filter_berth))
@@ -940,6 +943,7 @@ class SearchHandler(BaseHandler):
         keyboard = flt.build_filter_keyboard(
             search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
             context, submit_text=submit_text, submit_cb=submit_cb, min_seats=search_state.min_seats,
+            include_disabled=incl,
         )
         if search_state.progress_message_id:
             await self.notification_service.edit_message(
@@ -965,6 +969,8 @@ class SearchHandler(BaseHandler):
                 search_state.filter_car_types = flt.toggle_car_type(search_state.filter_car_types, value)
             elif kind == 'berth':
                 search_state.filter_berth = value
+            elif kind == 'disabled':
+                search_state.filter_include_disabled = (value == '1')
             elif kind == 'price':
                 if value == 'set':
                     # запрашиваем сумму вводом сообщением
@@ -1070,6 +1076,7 @@ class SearchHandler(BaseHandler):
             search_state.filter_berth = sub.berth or 'any'
             search_state.filter_max_price = sub.max_price or 0
             search_state.min_seats = sub.min_seats or 1
+            search_state.filter_include_disabled = bool(sub.include_disabled)
             search_state.editing_subscription_id = subscription_id
             search_state.search_step = 'editfilters'
             search_state.progress_message_id = None  # рисуем панель отдельным сообщением
@@ -1091,11 +1098,11 @@ class SearchHandler(BaseHandler):
             ok = self.db_manager.update_subscription_filters(
                 sub_id, user_id,
                 search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
-                search_state.min_seats,
+                search_state.min_seats, bool(search_state.filter_include_disabled),
             )
             summary = flt.format_filter_summary(
                 search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price,
-                search_state.min_seats,
+                search_state.min_seats, include_disabled=bool(search_state.filter_include_disabled),
             )
             if ok:
                 text = (f"✅ Фильтры подписки #{sub_id} обновлены.\nФильтр: <b>{summary}</b>")
@@ -1148,6 +1155,7 @@ class SearchHandler(BaseHandler):
                 berth=search_state.filter_berth,
                 max_price=search_state.filter_max_price,
                 min_seats=search_state.min_seats,
+                include_disabled=bool(search_state.filter_include_disabled),
                 adult_passengers=search_state.adult_passengers,
                 children_passengers=search_state.children_passengers,
                 interval_minutes=5,
@@ -1161,7 +1169,7 @@ class SearchHandler(BaseHandler):
                     f"Поезд: <b>{search_state.selected_train_number}</b> {search_state.selected_train_info or ''}\n"
                     f"Маршрут: {search_state.origin_name} -> {search_state.destination_name}\n"
                     f"Дата: {search_state.departure_date[:10]}\n"
-                    f"Фильтр: {flt.format_filter_summary(search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price, search_state.min_seats)}\n\n"
+                    f"Фильтр: {flt.format_filter_summary(search_state.filter_car_types, search_state.filter_berth, search_state.filter_max_price, search_state.min_seats, include_disabled=bool(search_state.filter_include_disabled))}\n\n"
                     f"Бот будет проверять наличие мест в поезде {search_state.selected_train_number} каждые 5 минут и уведомит вас при их появлении."
                 )
                 if search_state.progress_message_id:
